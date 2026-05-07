@@ -38,6 +38,19 @@ Git Bash mode is available for more complex Bash scripts when Git for Windows is
 - Final APKs: `<chosen-output-folder>\<repo-name>\<branch>\<timestamp>\`
 - Latest APKs: `<chosen-output-folder>\<repo-name>\latest\`
 
+The default repo folder can be changed in Settings. The backend honors that folder when cloning and updating repositories.
+
+## Windows 10/11 Without Admin Rights
+
+The app is designed to run from user-writable locations. For a laptop where you cannot install machine-wide tools, use per-user installs:
+
+- Git for Windows: install for the current user, or make sure `git.exe` is in `PATH`. The app also checks `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`.
+- Git Bash mode: install Git for Windows for the current user. The app checks `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`.
+- Java: install JDK 17 and set `JAVA_HOME`, or make sure `java.exe` is in `PATH`.
+- Android SDK: set `ANDROID_HOME` or `ANDROID_SDK_ROOT`, or install the SDK at `%LOCALAPPDATA%\Android\Sdk`.
+
+When the SDK is found under `%LOCALAPPDATA%\Android\Sdk`, the app passes that path to build steps as both `ANDROID_HOME` and `ANDROID_SDK_ROOT`.
+
 ## Security Notes
 
 - Secrets are stored per repo.
@@ -60,3 +73,7 @@ Build installers:
 ```powershell
 npm run tauri build
 ```
+
+## Continuous Integration
+
+GitHub Actions builds the Windows desktop launcher on every push to `main` and uploads the MSI/NSIS installers as workflow artifacts. This repository does not contain an Android project or a configured Tauri mobile target, so CI builds the launcher that creates APKs locally rather than an Android `.apk` for the launcher itself.

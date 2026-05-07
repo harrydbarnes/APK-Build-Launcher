@@ -179,13 +179,13 @@ fn prepare_repo(repo_url: String, ref_name: String) -> Result<String, String> {
     let repo_path = repo_path_for(&repo_url)?;
     if repo_path.exists() {
         run_checked(
-            CommandSpec::new("git", ["fetch", "--all", "--prune"]).cwd(&repo_path),
+            git_spec(["fetch", "--all", "--prune"]).cwd(&repo_path),
             None,
         )?;
     } else {
-        ensure_dir(&default_repo_root())?;
+        ensure_dir(&configured_repo_root())?;
         let repo_path_text = repo_path.to_string_lossy().to_string();
-        run_checked(CommandSpec::new("git", ["clone", repo_url.as_str(), repo_path_text.as_str()]), None)?;
+        run_checked(git_spec(["clone", repo_url.as_str(), repo_path_text.as_str()]), None)?;
     }
 
     checkout_ref(&repo_path, &ref_name)?;
@@ -281,7 +281,7 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
     let repo_path = PathBuf::from(prepare_repo(request.repo_url.clone(), request.ref_name.clone())?);
     log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
 
-    check_android_sdk()?;
+    let android_sdk = android_sdk_path()?;
     let doc = load_workflow(&request.workflow_path)?;
     let job = doc.jobs.get(&request.job_id).ok_or_else(|| format!("Job '{}' was not found", request.job_id))?.clone();
     let secrets = unprotect_secret_store(&stable_id(&request.repo_url))?;
@@ -297,6 +297,7 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
     let context = Context {
         workspace: repo_path.clone(),
         ref_name: request.ref_name.clone(),
+        android_sdk,
         workflow_env: value_map_to_strings(&doc.env),
         job_env: value_map_to_strings(&job.env),
         secrets,
@@ -456,6 +457,7 @@ fn run_process(app: &AppHandle, build_id: &str, cwd: &Path, program: &str, args:
 struct Context {
     workspace: PathBuf,
     ref_name: String,
+    android_sdk: PathBuf,
     workflow_env: HashMap<String, String>,
     job_env: HashMap<String, String>,
     secrets: HashMap<String, String>,
@@ -465,6 +467,9 @@ impl Context {
     fn env_for_step(&self, step: &StepDoc) -> Result<HashMap<String, String>, String> {
         let mut env = self.workflow_env.clone();
         env.extend(self.job_env.clone());
+        let android_sdk = self.android_sdk.to_string_lossy().to_string();
+        env.entry("ANDROID_HOME".to_string()).or_insert_with(|| android_sdk.clone());
+        env.entry("ANDROID_SDK_ROOT".to_string()).or_insert(android_sdk);
         for (key, value) in &step.env {
             let raw = value_to_string(value).unwrap_or_default();
             let replaced = replace_expressions(&raw, self, &env)?;
@@ -536,30 +541,30 @@ fn checkout_ref(repo_path: &Path, ref_name: &str) -> Result<(), String> {
     let trimmed = ref_name.trim();
     if trimmed.chars().all(|c| c.is_ascii_digit()) {
         let pr_ref = format!("pull/{}/head:pr-{}", trimmed, trimmed);
-        run_checked(CommandSpec::new("git", ["fetch", "origin", &pr_ref]).cwd(repo_path), None)?;
-        run_checked(CommandSpec::new("git", ["checkout", &format!("pr-{}", trimmed)]).cwd(repo_path), None)
+        run_checked(git_spec(["fetch", "origin", &pr_ref]).cwd(repo_path), None)?;
+        run_checked(git_spec(["checkout", &format!("pr-{}", trimmed)]).cwd(repo_path), None)
     } else {
         let remote_ref = format!("origin/{}", trimmed);
-        let checkout_target = if run_checked(CommandSpec::new("git", ["rev-parse", "--verify", &remote_ref]).cwd(repo_path), None).is_ok() {
+        let checkout_target = if run_checked(git_spec(["rev-parse", "--verify", &remote_ref]).cwd(repo_path), None).is_ok() {
             remote_ref
         } else {
             trimmed.to_string()
         };
-        run_checked(CommandSpec::new("git", ["checkout", &checkout_target]).cwd(repo_path), None)
+        run_checked(git_spec(["checkout", &checkout_target]).cwd(repo_path), None)
     }
 }
 
 fn validate_tools(needs_bash: bool) -> Result<(), String> {
-    run_checked(CommandSpec::new("git", ["--version"]), None).map_err(|_| "Git is required. Install Git for Windows and ensure git is in PATH.".to_string())?;
+    run_checked(git_spec(["--version"]), None).map_err(|_| "Git is required. Install Git for Windows for the current user or ensure git is in PATH.".to_string())?;
     validate_java_version("17")?;
     if needs_bash && find_git_bash().is_none() {
-        return Err("Git Bash is required for Bash compatibility mode. Install Git for Windows.".to_string());
+        return Err("Git Bash is required for Bash compatibility mode. Install Git for Windows for the current user.".to_string());
     }
     Ok(())
 }
 
 fn validate_java_version(expected: &str) -> Result<(), String> {
-    let output = Command::new("java").arg("-version").output().map_err(|_| "Java 17 is required. Install Temurin/OpenJDK 17 and ensure java is in PATH.".to_string())?;
+    let output = Command::new(java_program()).arg("-version").output().map_err(|_| "Java 17 is required. Install Temurin/OpenJDK 17 and ensure java is in PATH or JAVA_HOME.".to_string())?;
     let version_text = String::from_utf8_lossy(&output.stderr).to_string() + &String::from_utf8_lossy(&output.stdout);
     if expected == "17" && !version_text.contains("\"17.") && !version_text.contains(" version \"17") {
         return Err("Java 17 is required, but the detected java version is different.".to_string());
@@ -568,12 +573,21 @@ fn validate_java_version(expected: &str) -> Result<(), String> {
 }
 
 fn check_android_sdk() -> Result<(), String> {
-    if std::env::var("ANDROID_HOME").is_ok() || std::env::var("ANDROID_SDK_ROOT").is_ok() {
-        return Ok(());
+    android_sdk_path().map(|_| ())
+}
+
+fn android_sdk_path() -> Result<PathBuf, String> {
+    for name in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Ok(value) = std::env::var(name) {
+            let path = PathBuf::from(value);
+            if path.exists() {
+                return Ok(path);
+            }
+        }
     }
     let fallback = dirs::data_local_dir().unwrap_or_else(default_app_data).join("Android").join("Sdk");
     if fallback.exists() {
-        return Ok(());
+        return Ok(fallback);
     }
     Err("Android SDK was not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or install it at %LOCALAPPDATA%\\Android\\Sdk.".to_string())
 }
@@ -744,6 +758,14 @@ impl CommandSpec {
         Self { program: program.to_string(), args: args.into_iter().map(|arg| arg.as_ref().to_string()).collect(), cwd: None }
     }
 
+    fn new_path<I, S>(program: PathBuf, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self { program: program.to_string_lossy().to_string(), args: args.into_iter().map(|arg| arg.as_ref().to_string()).collect(), cwd: None }
+    }
+
     fn cwd(mut self, path: &Path) -> Self {
         self.cwd = Some(path.to_path_buf());
         self
@@ -800,14 +822,49 @@ fn runs_on_to_string(value: &Value) -> String {
 }
 
 fn find_git_bash() -> Option<PathBuf> {
-    [
+    let mut candidates = vec![
         r"C:\Program Files\Git\bin\bash.exe",
         r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ].into_iter().map(PathBuf::from).find(|path| path.exists())
+    ].into_iter().map(PathBuf::from).collect::<Vec<_>>();
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("Programs").join("Git").join("bin").join("bash.exe"));
+    }
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn git_program() -> PathBuf {
+    let mut candidates = vec![
+        PathBuf::from("git"),
+        PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
+    ];
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("Programs").join("Git").join("cmd").join("git.exe"));
+    }
+    candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| PathBuf::from("git"))
+}
+
+fn git_spec<I, S>(args: I) -> CommandSpec
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    CommandSpec::new_path(git_program(), args)
+}
+
+fn java_program() -> PathBuf {
+    let exe = if cfg!(windows) { "java.exe" } else { "java" };
+    if let Ok(java_home) = std::env::var("JAVA_HOME") {
+        let path = PathBuf::from(java_home).join("bin").join(exe);
+        if path.exists() {
+            return path;
+        }
+    }
+    PathBuf::from("java")
 }
 
 fn repo_path_for(repo_url: &str) -> Result<PathBuf, String> {
-    Ok(default_repo_root().join(format!("{}-{}", sanitize(&repo_name(repo_url)), &stable_id(repo_url)[..8])))
+    Ok(configured_repo_root().join(format!("{}-{}", sanitize(&repo_name(repo_url)), &stable_id(repo_url)[..8])))
 }
 
 fn repo_name(repo_url: &str) -> String {
@@ -836,6 +893,14 @@ fn config_root() -> PathBuf {
 
 fn default_repo_root() -> PathBuf {
     default_app_data().join("ApkBuildLauncher").join("repos")
+}
+
+fn configured_repo_root() -> PathBuf {
+    get_config()
+        .ok()
+        .map(|config| PathBuf::from(config.default_repo_folder))
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(default_repo_root)
 }
 
 fn default_app_data() -> PathBuf {
