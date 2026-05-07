@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-width: 960px;
+  background: #09090b;
+}
+
+@layer components {
+  .input {
+    @apply w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-400;
+  }
+
+  .button {
+    @apply rounded-md bg-cyan-400 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400;
+  }
+
+  .button.secondary {
+    @apply bg-zinc-800 text-zinc-100 hover:bg-zinc-700;
+  }
+
+  .button.danger {
+    @apply bg-red-500 text-white hover:bg-red-400;
+  }
+}

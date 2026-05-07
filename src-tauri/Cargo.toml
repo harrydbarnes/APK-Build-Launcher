@@ -1,0 +1,29 @@
+[package]
+name = "apk-build-launcher"
+version = "0.1.0"
+description = "APK Build Launcher"
+authors = ["APK Build Launcher"]
+edition = "2021"
+
+[lib]
+name = "apk_build_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+dirs = "5"
+glob = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sha2 = "0.10"
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["process", "io-util", "rt-multi-thread", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
