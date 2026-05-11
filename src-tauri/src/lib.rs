@@ -16,7 +16,7 @@ use std::{
     },
     thread,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Default)]
 struct BuildState {
@@ -410,7 +410,7 @@ fn run_native_translation(app: &AppHandle, build_id: &str, repo_path: &Path, scr
 
 fn run_process(app: &AppHandle, build_id: &str, cwd: &Path, program: &str, args: &[&str], envs: &HashMap<String, String>, cancel: Arc<AtomicBool>) -> Result<(), String> {
     let mut command = Command::new(program);
-    command.args(args).cwd(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(args).current_dir(cwd).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in envs {
         command.env(key, value);
     }
