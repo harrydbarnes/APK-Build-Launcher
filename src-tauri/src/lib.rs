@@ -706,30 +706,64 @@ fn unprotect_secret_store(repo_key: &str) -> Result<HashMap<String, String>, Str
 
 #[cfg(windows)]
 fn protect_secret(value: &str) -> Result<String, String> {
-    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, DATA_BLOB};
-    let mut input = DATA_BLOB { cbData: value.as_bytes().len() as u32, pbData: value.as_ptr() as *mut u8 };
-    let mut output = DATA_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
-    let ok = unsafe { CryptProtectData(&mut input, std::ptr::null(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) };
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{CryptProtectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
+    };
+    let input = CRYPTOAPI_BLOB { cbData: value.as_bytes().len() as u32, pbData: value.as_ptr() as *mut u8 };
+    let mut output = CRYPTOAPI_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    let ok = unsafe {
+        CryptProtectData(
+            &input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
     if ok == 0 {
         return Err("Windows DPAPI failed while saving a secret".to_string());
     }
     let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) };
-    Ok(format!("dpapi:{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    let protected = format!("dpapi:{}", base64::engine::general_purpose::STANDARD.encode(bytes));
+    unsafe {
+        let _ = LocalFree(output.pbData as _);
+    }
+    Ok(protected)
 }
 
 #[cfg(windows)]
 fn unprotect_secret(value: &str) -> Result<String, String> {
-    use windows_sys::Win32::Security::Cryptography::{CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, DATA_BLOB};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::Cryptography::{CryptUnprotectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
+    };
     let encoded = value.strip_prefix("dpapi:").unwrap_or(value);
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(display_err)?;
-    let mut input = DATA_BLOB { cbData: bytes.len() as u32, pbData: bytes.as_ptr() as *mut u8 };
-    let mut output = DATA_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
-    let ok = unsafe { CryptUnprotectData(&mut input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut(), std::ptr::null_mut(), CRYPTPROTECT_UI_FORBIDDEN, &mut output) };
+    let input = CRYPTOAPI_BLOB { cbData: bytes.len() as u32, pbData: bytes.as_ptr() as *mut u8 };
+    let mut output = CRYPTOAPI_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    let ok = unsafe {
+        CryptUnprotectData(
+            &input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+    };
     if ok == 0 {
         return Err("Windows DPAPI failed while reading a secret".to_string());
     }
     let bytes = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize) };
-    String::from_utf8(bytes.to_vec()).map_err(display_err)
+    let plain = String::from_utf8(bytes.to_vec()).map_err(display_err);
+    unsafe {
+        let _ = LocalFree(output.pbData as _);
+    }
+    plain
 }
 
 #[cfg(not(windows))]
