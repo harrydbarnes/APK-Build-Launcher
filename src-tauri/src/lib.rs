@@ -708,13 +708,13 @@ fn unprotect_secret_store(repo_key: &str) -> Result<HashMap<String, String>, Str
 fn protect_secret(value: &str) -> Result<String, String> {
     use windows_sys::Win32::{
         Foundation::LocalFree,
-        Security::Cryptography::{CryptProtectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
+        Security::Cryptography::{CryptProtectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB},
     };
-    let input = CRYPTOAPI_BLOB { cbData: value.as_bytes().len() as u32, pbData: value.as_ptr() as *mut u8 };
-    let mut output = CRYPTOAPI_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    let mut input = CRYPT_INTEGER_BLOB { cbData: value.as_bytes().len() as u32, pbData: value.as_ptr() as *mut u8 };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     let ok = unsafe {
         CryptProtectData(
-            &input,
+            &mut input,
             std::ptr::null(),
             std::ptr::null(),
             std::ptr::null_mut(),
@@ -738,15 +738,15 @@ fn protect_secret(value: &str) -> Result<String, String> {
 fn unprotect_secret(value: &str) -> Result<String, String> {
     use windows_sys::Win32::{
         Foundation::LocalFree,
-        Security::Cryptography::{CryptUnprotectData, CRYPTOAPI_BLOB, CRYPTPROTECT_UI_FORBIDDEN},
+        Security::Cryptography::{CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB},
     };
     let encoded = value.strip_prefix("dpapi:").unwrap_or(value);
     let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(display_err)?;
-    let input = CRYPTOAPI_BLOB { cbData: bytes.len() as u32, pbData: bytes.as_ptr() as *mut u8 };
-    let mut output = CRYPTOAPI_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+    let mut input = CRYPT_INTEGER_BLOB { cbData: bytes.len() as u32, pbData: bytes.as_ptr() as *mut u8 };
+    let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
     let ok = unsafe {
         CryptUnprotectData(
-            &input,
+            &mut input,
             std::ptr::null_mut(),
             std::ptr::null(),
             std::ptr::null_mut(),
