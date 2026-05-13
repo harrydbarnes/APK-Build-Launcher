@@ -2,7 +2,7 @@
 name = "apk-build-launcher"
 version = "0.1.0"
 description = "APK Build Launcher"
-authors = ["APK Build Launcher"]
+authors = ["Harry Barnes"]
 edition = "2021"
 
 [lib]
