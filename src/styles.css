@@ -3,29 +3,190 @@
 @tailwind utilities;
 
 :root {
+  --bg: #09090b;
+  --sidebar: #18181b;
+  --surface: #18181b;
+  --surface-2: #27272a;
+  --field: #18181b;
+  --text: #f4f4f5;
+  --muted: #a1a1aa;
+  --subtle: #71717a;
+  --border: #27272a;
+  --accent: #22d3ee;
+  --accent-hover: #67e8f9;
+  --accent-text: #09090b;
+  --danger: #ef4444;
+  --danger-hover: #f87171;
+  --success: #6ee7b7;
+  --log-bg: #030712;
   color-scheme: dark;
+}
+
+html[data-theme="light"] {
+  --bg: #f8fafc;
+  --sidebar: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --field: #ffffff;
+  --text: #111827;
+  --muted: #4b5563;
+  --subtle: #6b7280;
+  --border: #d1d5db;
+  --accent: #0e7490;
+  --accent-hover: #155e75;
+  --accent-text: #ffffff;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --success: #047857;
+  --log-bg: #111827;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  html[data-theme="system"] {
+    --bg: #f8fafc;
+    --sidebar: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #f1f5f9;
+    --field: #ffffff;
+    --text: #111827;
+    --muted: #4b5563;
+    --subtle: #6b7280;
+    --border: #d1d5db;
+    --accent: #0e7490;
+    --accent-hover: #155e75;
+    --accent-text: #ffffff;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+    --success: #047857;
+    --log-bg: #111827;
+    color-scheme: light;
+  }
 }
 
 body {
   margin: 0;
   min-width: 960px;
-  background: #09090b;
+  background: var(--bg);
 }
 
 @layer components {
+  .app-root {
+    background: var(--bg);
+    color: var(--text);
+  }
+
+  .app-sidebar {
+    background: var(--sidebar);
+    border-color: var(--border);
+  }
+
+  .tab-button {
+    @apply rounded-md px-3 py-2 text-left text-sm transition;
+    color: var(--muted);
+  }
+
+  .tab-button:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .tab-button.active {
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .status-card,
+  .surface-card {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--muted);
+  }
+
+  .sub-surface {
+    background: var(--surface-2);
+  }
+
+  .field-label,
+  .strong-text {
+    color: var(--text);
+  }
+
+  .text-muted {
+    color: var(--muted);
+  }
+
+  .text-subtle,
+  .field-hint {
+    color: var(--subtle);
+  }
+
+  .field-hint {
+    @apply text-xs;
+  }
+
+  .input-action {
+    @apply flex gap-2;
+  }
+
+  .action-button {
+    @apply shrink-0 px-3;
+  }
+
+  .log-box {
+    background: var(--log-bg);
+    border-color: var(--border);
+  }
+
+  .success-text {
+    color: var(--success);
+  }
+
   .input {
-    @apply w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none transition placeholder:text-zinc-600 focus:border-cyan-400;
+    @apply w-full rounded-md border px-3 py-2 text-sm outline-none transition;
+    background: var(--field);
+    border-color: var(--border);
+    color: var(--text);
+  }
+
+  .input::placeholder {
+    color: var(--subtle);
+  }
+
+  .input:focus {
+    border-color: var(--accent);
   }
 
   .button {
-    @apply rounded-md bg-cyan-400 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400;
+    @apply rounded-md px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed;
+    background: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .button:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+
+  .button:disabled {
+    background: var(--surface-2);
+    color: var(--subtle);
   }
 
   .button.secondary {
-    @apply bg-zinc-800 text-zinc-100 hover:bg-zinc-700;
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .button.secondary:hover:not(:disabled) {
+    background: var(--border);
   }
 
   .button.danger {
-    @apply bg-red-500 text-white hover:bg-red-400;
+    background: var(--danger);
+    color: white;
+  }
+
+  .button.danger:hover:not(:disabled) {
+    background: var(--danger-hover);
   }
 }

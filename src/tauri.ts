@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppConfig, BuildRequest, BuildResult, SecretSummary, WorkflowSummary } from "./types";
+import type { AppConfig, BranchSummary, BuildRequest, BuildResult, SecretSummary, WorkflowSummary } from "./types";
 
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
@@ -9,6 +9,7 @@ export const api = {
     const selected = await open({ directory: true, multiple: false });
     return typeof selected === "string" ? selected : "";
   },
+  listBranches: (repoUrl: string) => invoke<BranchSummary[]>("list_branches", { repoUrl }),
   prepareRepo: (repoUrl: string, refName: string) =>
     invoke<string>("prepare_repo", { repoUrl, refName }),
   detectWorkflows: (repoPath: string) =>

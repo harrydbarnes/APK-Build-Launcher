@@ -144,6 +144,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
+            list_branches,
             prepare_repo,
             detect_workflows,
             get_secrets,
@@ -174,8 +175,15 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn list_branches(repo_url: String) -> Result<Vec<String>, String> {
+    validate_git()?;
+    let output = run_output(git_spec(["ls-remote", "--symref", repo_url.as_str(), "HEAD", "refs/heads/*"]), None)?;
+    Ok(parse_remote_branches(&output))
+}
+
+#[tauri::command]
 fn prepare_repo(repo_url: String, ref_name: String) -> Result<String, String> {
-    validate_tools(false)?;
+    validate_git()?;
     let repo_path = repo_path_for(&repo_url)?;
     if repo_path.exists() {
         run_checked(
@@ -277,7 +285,7 @@ fn cancel_build(state: State<BuildState>) -> Result<(), String> {
 
 fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, request: BuildRequest) -> Result<BuildResult, String> {
     log(&app, &build_id, "group", "Preparing repository");
-    validate_tools(matches!(request.shell_mode, ShellMode::Bash))?;
+    let java = validate_tools(matches!(request.shell_mode, ShellMode::Bash))?;
     let repo_path = PathBuf::from(prepare_repo(request.repo_url.clone(), request.ref_name.clone())?);
     log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
 
@@ -298,6 +306,8 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
         workspace: repo_path.clone(),
         ref_name: request.ref_name.clone(),
         android_sdk,
+        java_home: java.home.clone(),
+        java_bin_dir: java.java.parent().filter(|path| !path.as_os_str().is_empty()).map(|path| path.to_path_buf()),
         workflow_env: value_map_to_strings(&doc.env),
         job_env: value_map_to_strings(&job.env),
         secrets,
@@ -336,8 +346,8 @@ fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: 
         }
         if lower.starts_with("actions/setup-java@") {
             let version = step.with.get("java-version").and_then(value_to_string).unwrap_or_else(|| "17".to_string());
-            validate_java_version(&version)?;
-            log(app, build_id, "success", &format!("Java {} is available", version));
+            let java = validate_java_version(&version)?;
+            log(app, build_id, "success", &format!("Java {} is available at {}", version, java.java.display()));
             return Ok(());
         }
         if lower.starts_with("actions/upload-artifact@") {
@@ -458,6 +468,8 @@ struct Context {
     workspace: PathBuf,
     ref_name: String,
     android_sdk: PathBuf,
+    java_home: Option<PathBuf>,
+    java_bin_dir: Option<PathBuf>,
     workflow_env: HashMap<String, String>,
     job_env: HashMap<String, String>,
     secrets: HashMap<String, String>,
@@ -470,6 +482,14 @@ impl Context {
         let android_sdk = self.android_sdk.to_string_lossy().to_string();
         env.entry("ANDROID_HOME".to_string()).or_insert_with(|| android_sdk.clone());
         env.entry("ANDROID_SDK_ROOT".to_string()).or_insert(android_sdk);
+        if let Some(java_home) = &self.java_home {
+            env.entry("JAVA_HOME".to_string()).or_insert_with(|| java_home.to_string_lossy().to_string());
+        }
+        if let Some(java_bin_dir) = &self.java_bin_dir {
+            let existing_path = std::env::var("PATH").unwrap_or_default();
+            let separator = if cfg!(windows) { ";" } else { ":" };
+            env.entry("PATH".to_string()).or_insert_with(|| format!("{}{}{}", java_bin_dir.display(), separator, existing_path));
+        }
         for (key, value) in &step.env {
             let raw = value_to_string(value).unwrap_or_default();
             let replaced = replace_expressions(&raw, self, &env)?;
@@ -554,22 +574,73 @@ fn checkout_ref(repo_path: &Path, ref_name: &str) -> Result<(), String> {
     }
 }
 
-fn validate_tools(needs_bash: bool) -> Result<(), String> {
-    run_checked(git_spec(["--version"]), None).map_err(|_| "Git is required. Install Git for Windows for the current user or ensure git is in PATH.".to_string())?;
-    validate_java_version("17")?;
-    if needs_bash && find_git_bash().is_none() {
-        return Err("Git Bash is required for Bash compatibility mode. Install Git for Windows for the current user.".to_string());
+fn parse_remote_branches(output: &str) -> Vec<String> {
+    let mut default_branch = None;
+    let mut branches = vec![];
+    for line in output.lines() {
+        if let Some(rest) = line.strip_prefix("ref: refs/heads/") {
+            default_branch = rest.split_whitespace().next().map(|branch| branch.to_string());
+            continue;
+        }
+        let Some((_, reference)) = line.split_once('\t') else {
+            continue;
+        };
+        if let Some(branch) = reference.strip_prefix("refs/heads/") {
+            branches.push(branch.to_string());
+        }
     }
-    Ok(())
+    branches.sort();
+    branches.dedup();
+    if let Some(default_branch) = default_branch {
+        if let Some(index) = branches.iter().position(|branch| branch == &default_branch) {
+            let branch = branches.remove(index);
+            branches.insert(0, branch);
+        }
+    }
+    branches
 }
 
-fn validate_java_version(expected: &str) -> Result<(), String> {
-    let output = Command::new(java_program()).arg("-version").output().map_err(|_| "Java 17 is required. Install Temurin/OpenJDK 17 and ensure java is in PATH or JAVA_HOME.".to_string())?;
-    let version_text = String::from_utf8_lossy(&output.stderr).to_string() + &String::from_utf8_lossy(&output.stdout);
-    if expected == "17" && !version_text.contains("\"17.") && !version_text.contains(" version \"17") {
-        return Err("Java 17 is required, but the detected java version is different.".to_string());
+#[derive(Clone)]
+struct JavaInstall {
+    java: PathBuf,
+    home: Option<PathBuf>,
+}
+
+fn validate_tools(needs_bash: bool) -> Result<JavaInstall, String> {
+    validate_git()?;
+    let java = validate_java_version("17")?;
+    if needs_bash && find_git_bash().is_none() {
+        return Err("Git Bash is required for Bash compatibility mode. Install Git for Windows for the current user, or place portable Git at %LOCALAPPDATA%\\ApkBuildLauncher\\tools\\Git.".to_string());
     }
-    Ok(())
+    Ok(java)
+}
+
+fn validate_git() -> Result<(), String> {
+    run_checked(git_spec(["--version"]), None).map_err(|_| "Git is required for cloning and branch lookup. Install Git for Windows with the per-user installer, ensure git is in PATH, or place portable Git at %LOCALAPPDATA%\\ApkBuildLauncher\\tools\\Git.".to_string())
+}
+
+fn validate_java_version(expected: &str) -> Result<JavaInstall, String> {
+    let expected_major = expected_java_major(expected);
+    let mut detected = vec![];
+    for (java, home) in java_candidates(expected_major.as_deref()) {
+        let output = Command::new(&java).arg("-version").output();
+        let Ok(output) = output else {
+            continue;
+        };
+        let version_text = String::from_utf8_lossy(&output.stderr).to_string() + &String::from_utf8_lossy(&output.stdout);
+        let major = java_major_version(&version_text).unwrap_or_else(|| "unknown".to_string());
+        if expected_major.as_deref().map_or(true, |expected| major == expected) {
+            return Ok(JavaInstall { java, home });
+        }
+        detected.push(format!("{} at {}", major, java.display()));
+    }
+
+    let expected_text = expected_major.as_deref().unwrap_or(expected);
+    if detected.is_empty() {
+        Err(format!("Java {} is required for building, but Java was not found. Install Temurin/OpenJDK {} with a per-user installer, set JAVA_HOME, or unpack a JDK to %LOCALAPPDATA%\\ApkBuildLauncher\\tools\\jdk-{}. No admin rights are needed for that folder.", expected_text, expected_text, expected_text))
+    } else {
+        Err(format!("Java {} is required for building, but detected Java {}. Install Temurin/OpenJDK {} with a per-user installer, set JAVA_HOME to it, or unpack a JDK to %LOCALAPPDATA%\\ApkBuildLauncher\\tools\\jdk-{}. No admin rights are needed for that folder.", expected_text, detected.join(", "), expected_text, expected_text))
+    }
 }
 
 fn check_android_sdk() -> Result<(), String> {
@@ -825,6 +896,25 @@ fn run_checked(spec: CommandSpec, envs: Option<&HashMap<String, String>>) -> Res
     }
 }
 
+fn run_output(spec: CommandSpec, envs: Option<&HashMap<String, String>>) -> Result<String, String> {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    if let Some(cwd) = spec.cwd {
+        command.current_dir(cwd);
+    }
+    if let Some(envs) = envs {
+        for (key, value) in envs {
+            command.env(key, value);
+        }
+    }
+    let output = command.output().map_err(display_err)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(redact_line(&String::from_utf8_lossy(&output.stderr)))
+    }
+}
+
 fn value_map_to_strings(map: &BTreeMap<String, Value>) -> HashMap<String, String> {
     map.iter().filter_map(|(key, value)| value_to_string(value).map(|text| (key.clone(), text))).collect()
 }
@@ -861,6 +951,7 @@ fn find_git_bash() -> Option<PathBuf> {
         r"C:\Program Files (x86)\Git\bin\bash.exe",
     ].into_iter().map(PathBuf::from).collect::<Vec<_>>();
     if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("ApkBuildLauncher").join("tools").join("Git").join("bin").join("bash.exe"));
         candidates.push(local_app_data.join("Programs").join("Git").join("bin").join("bash.exe"));
     }
     candidates.into_iter().find(|path| path.exists())
@@ -873,6 +964,7 @@ fn git_program() -> PathBuf {
         PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
     ];
     if let Some(local_app_data) = dirs::data_local_dir() {
+        candidates.push(local_app_data.join("ApkBuildLauncher").join("tools").join("Git").join("cmd").join("git.exe"));
         candidates.push(local_app_data.join("Programs").join("Git").join("cmd").join("git.exe"));
     }
     candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| PathBuf::from("git"))
@@ -886,15 +978,72 @@ where
     CommandSpec::new_path(git_program(), args)
 }
 
-fn java_program() -> PathBuf {
+fn java_candidates(expected_major: Option<&str>) -> Vec<(PathBuf, Option<PathBuf>)> {
     let exe = if cfg!(windows) { "java.exe" } else { "java" };
+    let mut candidates = vec![];
     if let Ok(java_home) = std::env::var("JAVA_HOME") {
-        let path = PathBuf::from(java_home).join("bin").join(exe);
-        if path.exists() {
-            return path;
-        }
+        push_java_home(&mut candidates, PathBuf::from(java_home), exe);
     }
-    PathBuf::from("java")
+    if let Some(local_app_data) = dirs::data_local_dir() {
+        let tool_root = local_app_data.join("ApkBuildLauncher").join("tools");
+        if let Some(major) = expected_major {
+            push_java_home(&mut candidates, tool_root.join(format!("jdk-{}", major)), exe);
+        }
+        push_matching_java_homes(&mut candidates, &tool_root, expected_major, exe);
+        push_matching_java_homes(&mut candidates, &local_app_data.join("Programs").join("Eclipse Adoptium"), expected_major, exe);
+        push_matching_java_homes(&mut candidates, &local_app_data.join("Programs").join("Java"), expected_major, exe);
+    }
+    for root in [r"C:\Program Files\Eclipse Adoptium", r"C:\Program Files\Java", r"C:\Program Files\Microsoft"] {
+        push_matching_java_homes(&mut candidates, &PathBuf::from(root), expected_major, exe);
+    }
+    candidates.push((PathBuf::from(exe), None));
+    candidates
+}
+
+fn push_java_home(candidates: &mut Vec<(PathBuf, Option<PathBuf>)>, home: PathBuf, exe: &str) {
+    let java = home.join("bin").join(exe);
+    if java.exists() {
+        candidates.push((java, Some(home)));
+    }
+}
+
+fn push_matching_java_homes(candidates: &mut Vec<(PathBuf, Option<PathBuf>)>, root: &Path, expected_major: Option<&str>, exe: &str) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut homes = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| {
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default().to_ascii_lowercase();
+            expected_major.map_or(true, |major| name.contains(&format!("jdk-{}", major)) || name.contains(&format!("jdk{}", major)) || name.contains(&format!("-{}", major)))
+        })
+        .collect::<Vec<_>>();
+    homes.sort();
+    for home in homes {
+        push_java_home(candidates, home, exe);
+    }
+}
+
+fn expected_java_major(expected: &str) -> Option<String> {
+    let digits = expected.trim().chars().take_while(|c| c.is_ascii_digit()).collect::<String>();
+    if digits.is_empty() {
+        None
+    } else {
+        Some(digits)
+    }
+}
+
+fn java_major_version(version_text: &str) -> Option<String> {
+    let quoted = version_text.split('"').nth(1)?;
+    let mut parts = quoted.split('.');
+    let first = parts.next()?;
+    if first == "1" {
+        parts.next().map(|part| part.to_string())
+    } else {
+        Some(first.to_string())
+    }
 }
 
 fn repo_path_for(repo_url: &str) -> Result<PathBuf, String> {

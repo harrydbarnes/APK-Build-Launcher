@@ -45,9 +45,12 @@ The default repo folder can be changed in Settings. The backend honors that fold
 The app is designed to run from user-writable locations. For a laptop where you cannot install machine-wide tools, use per-user installs:
 
 - Git for Windows: install for the current user, or make sure `git.exe` is in `PATH`. The app also checks `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`.
-- Git Bash mode: install Git for Windows for the current user. The app checks `%LOCALAPPDATA%\Programs\Git\bin\bash.exe`.
-- Java: install JDK 17 and set `JAVA_HOME`, or make sure `java.exe` is in `PATH`.
+- Portable Git: unpack Git for Windows to `%LOCALAPPDATA%\ApkBuildLauncher\tools\Git`. The app checks `cmd\git.exe` for clone and branch lookup, and `bin\bash.exe` for Git Bash mode.
+- Git Bash mode: install Git for Windows for the current user, or use the portable Git location above.
+- Java: install JDK 17 and set `JAVA_HOME`, make sure `java.exe` is in `PATH`, or unpack a JDK to `%LOCALAPPDATA%\ApkBuildLauncher\tools\jdk-17`.
 - Android SDK: set `ANDROID_HOME` or `ANDROID_SDK_ROOT`, or install the SDK at `%LOCALAPPDATA%\Android\Sdk`.
+
+Cloning and branch lookup only require Git. Java 17 is checked when a build actually needs Java, and the app passes the detected JDK into build steps as `JAVA_HOME` and at the front of `PATH`.
 
 When the SDK is found under `%LOCALAPPDATA%\Android\Sdk`, the app passes that path to build steps as both `ANDROID_HOME` and `ANDROID_SDK_ROOT`.
 

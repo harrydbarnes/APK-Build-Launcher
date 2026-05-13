@@ -29,6 +29,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("Ready");
   const [result, setResult] = useState<BuildResult | null>(null);
+  const [branches, setBranches] = useState<string[]>([]);
+  const [loadingBranches, setLoadingBranches] = useState(false);
+  const [branchMessage, setBranchMessage] = useState("");
 
   useEffect(() => {
     api.getConfig().then((loaded) => {
@@ -36,6 +39,15 @@ export default function App() {
       setOutputFolder(loaded.defaultOutputFolder);
     }).catch((error) => setStatus(String(error)));
   }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = config.theme;
+  }, [config.theme]);
+
+  useEffect(() => {
+    setBranches([]);
+    setBranchMessage("");
+  }, [repoUrl]);
 
   useEffect(() => {
     const unlisten = listen<LogEvent>("build-log", (event) => {
@@ -55,6 +67,31 @@ export default function App() {
     () => selectedWorkflow?.jobs.find((job) => job.id === jobId),
     [selectedWorkflow, jobId],
   );
+
+  async function loadBranches() {
+    const trimmedRepoUrl = repoUrl.trim();
+    if (!trimmedRepoUrl) {
+      setBranchMessage("Enter a GitHub repo URL first.");
+      return;
+    }
+
+    setLoadingBranches(true);
+    setBranchMessage("Loading branches...");
+    try {
+      const loaded = await api.listBranches(trimmedRepoUrl);
+      setBranches(loaded);
+      if (loaded.length && (!refName.trim() || !loaded.includes(refName.trim()))) {
+        setRefName(loaded[0]);
+      }
+      setBranchMessage(loaded.length ? `${loaded.length} branch${loaded.length === 1 ? "" : "es"} loaded.` : "No branches found.");
+    } catch (error) {
+      const message = String(error);
+      setBranchMessage(message);
+      setStatus(message);
+    } finally {
+      setLoadingBranches(false);
+    }
+  }
 
   async function prepareAndDetect() {
     setBusy(true);
@@ -131,26 +168,24 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-zinc-100">
+    <main className="app-root min-h-screen">
       <div className="flex min-h-screen">
-        <aside className="w-60 border-r border-zinc-800 bg-zinc-900/80 p-4">
+        <aside className="app-sidebar w-60 border-r p-4">
           <h1 className="text-xl font-semibold tracking-normal">APK Build Launcher</h1>
-          <p className="mt-2 text-sm text-zinc-400">Workflow Adapter for Android APK builds</p>
+          <p className="text-muted mt-2 text-sm">Workflow Adapter for Android APK builds</p>
           <nav className="mt-8 grid gap-1">
             {tabs.map((tab) => (
               <button
                 key={tab}
-                className={`rounded-md px-3 py-2 text-left text-sm transition ${
-                  activeTab === tab ? "bg-cyan-500 text-zinc-950" : "text-zinc-300 hover:bg-zinc-800"
-                }`}
+                className={`tab-button ${activeTab === tab ? "active" : ""}`}
                 onClick={() => setActiveTab(tab)}
               >
                 {tab}
               </button>
             ))}
           </nav>
-          <div className="mt-8 rounded-md border border-zinc-800 p-3 text-xs text-zinc-400">
-            <div className="font-medium text-zinc-200">Status</div>
+          <div className="status-card mt-8 rounded-md border p-3 text-xs">
+            <div className="strong-text font-medium">Status</div>
             <div className="mt-1 break-words">{status}</div>
           </div>
         </aside>
@@ -160,10 +195,29 @@ export default function App() {
             <Panel title="Home">
               <div className="grid gap-4 lg:grid-cols-2">
                 <Field label="GitHub repo URL">
-                  <input className="input" value={repoUrl} onChange={(event) => setRepoUrl(event.target.value)} placeholder="https://github.com/org/repo.git" />
+                  <div className="input-action">
+                    <input
+                      className="input"
+                      value={repoUrl}
+                      onChange={(event) => setRepoUrl(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          void loadBranches();
+                        }
+                      }}
+                      placeholder="https://github.com/org/repo.git"
+                    />
+                    <button className="button secondary action-button" disabled={busy || loadingBranches || !repoUrl.trim()} onClick={loadBranches} title="Load branches from this repo">
+                      {loadingBranches ? "..." : "Check"}
+                    </button>
+                  </div>
+                  {branchMessage && <span className="field-hint">{branchMessage}</span>}
                 </Field>
                 <Field label="Branch, PR branch, or PR number">
-                  <input className="input" value={refName} onChange={(event) => setRefName(event.target.value)} placeholder="dev or 123" />
+                  <input className="input" list="branch-options" value={refName} onChange={(event) => setRefName(event.target.value)} placeholder="dev or 123" />
+                  <datalist id="branch-options">
+                    {branches.map((branch) => <option key={branch} value={branch} />)}
+                  </datalist>
                 </Field>
                 <Field label="Workflow">
                   <select className="input" value={workflowPath} onChange={(event) => setWorkflowPath(event.target.value)}>
@@ -195,13 +249,13 @@ export default function App() {
                 <button className="button" disabled={busy || !repoUrl || !outputFolder || !workflowPath || !jobId} onClick={startBuild}>Build APK</button>
                 <button className="button danger" disabled={!busy} onClick={cancelBuild}>Cancel</button>
               </div>
-              {selectedJob && <p className="mt-4 text-sm text-zinc-400">Selected job runs on {selectedJob.runsOn} with {selectedJob.stepCount} steps. It will execute locally on Windows.</p>}
+              {selectedJob && <p className="text-muted mt-4 text-sm">Selected job runs on {selectedJob.runsOn} with {selectedJob.stepCount} steps. It will execute locally on Windows.</p>}
             </Panel>
           )}
 
           {activeTab === "Secrets" && (
             <Panel title="Secrets">
-              <p className="mb-4 text-sm text-zinc-400">Values are stored locally per repo and redacted from logs. Add the sample workflow secrets here if they are not already present.</p>
+              <p className="text-muted mb-4 text-sm">Values are stored locally per repo and redacted from logs. Add the sample workflow secrets here if they are not already present.</p>
               <div className="grid gap-4 lg:grid-cols-2">
                 {["LOCAL_PROPERTIES_BASE64", "LOCAL_DEV_PROPERTIES_BASE64"].map((name) => (
                   <Field key={name} label={`${name}${savedSecretNames.includes(name) ? " (saved)" : ""}`}>
@@ -217,36 +271,36 @@ export default function App() {
             <Panel title="Workflows">
               <div className="space-y-3">
                 {workflows.map((workflow) => (
-                  <div key={workflow.filePath} className="rounded-md border border-zinc-800 p-4">
+                  <div key={workflow.filePath} className="surface-card rounded-md border p-4">
                     <div className="flex items-start justify-between gap-4">
                       <div>
                         <h2 className="font-medium">{workflow.name}</h2>
-                        <p className="text-sm text-zinc-400">{workflow.filePath}</p>
-                        <p className="mt-1 text-xs text-zinc-500">Trigger: {workflow.trigger}</p>
+                        <p className="text-muted text-sm">{workflow.filePath}</p>
+                        <p className="text-subtle mt-1 text-xs">Trigger: {workflow.trigger}</p>
                       </div>
                       <button className="button secondary" onClick={() => { setWorkflowPath(workflow.filePath); setJobId(workflow.jobs[0]?.id ?? ""); }}>Use</button>
                     </div>
                     <div className="mt-3 grid gap-2">
                       {workflow.jobs.map((job) => (
-                        <div key={job.id} className="rounded bg-zinc-900 px-3 py-2 text-sm">
-                          {job.name} · {job.runsOn} · {job.stepCount} steps
+                        <div key={job.id} className="sub-surface rounded px-3 py-2 text-sm">
+                          {job.name} | {job.runsOn} | {job.stepCount} steps
                         </div>
                       ))}
                     </div>
                   </div>
                 ))}
-                {!workflows.length && <p className="text-sm text-zinc-400">No workflows detected yet.</p>}
+                {!workflows.length && <p className="text-muted text-sm">No workflows detected yet.</p>}
               </div>
             </Panel>
           )}
 
           {activeTab === "Logs" && (
             <Panel title="Logs">
-              <div className="h-[65vh] overflow-auto rounded-md border border-zinc-800 bg-black p-4 font-mono text-xs leading-5">
+              <div className="log-box h-[65vh] overflow-auto rounded-md border p-4 font-mono text-xs leading-5">
                 {logs.map((log, index) => <LogLine key={`${log.buildId}-${index}`} log={log} />)}
-                {!logs.length && <span className="text-zinc-500">Build logs will appear here.</span>}
+                {!logs.length && <span className="text-subtle">Build logs will appear here.</span>}
               </div>
-              {result && <p className="mt-4 text-sm text-emerald-300">Copied {result.apkFiles.length} APK file(s) to {result.outputFolder}</p>}
+              {result && <p className="success-text mt-4 text-sm">Copied {result.apkFiles.length} APK file(s) to {result.outputFolder}</p>}
             </Panel>
           )}
 
@@ -293,7 +347,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <label className="grid gap-2 text-sm text-zinc-300">
+    <label className="field-label grid gap-2 text-sm">
       <span>{label}</span>
       {children}
     </label>
