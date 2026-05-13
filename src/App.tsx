@@ -32,17 +32,37 @@ export default function App() {
   const [branches, setBranches] = useState<string[]>([]);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [branchMessage, setBranchMessage] = useState("");
+  const [appReady, setAppReady] = useState(false);
+  const [splashHoldComplete, setSplashHoldComplete] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+  const [splashExiting, setSplashExiting] = useState(false);
 
   useEffect(() => {
     api.getConfig().then((loaded) => {
       setConfig(loaded);
       setOutputFolder(loaded.defaultOutputFolder);
-    }).catch((error) => setStatus(String(error)));
+    }).catch((error) => setStatus(String(error)))
+      .finally(() => setAppReady(true));
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = config.theme;
   }, [config.theme]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSplashHoldComplete(true), 2200);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (!appReady || !splashHoldComplete || !showSplash) {
+      return;
+    }
+
+    setSplashExiting(true);
+    const timer = window.setTimeout(() => setShowSplash(false), 360);
+    return () => window.clearTimeout(timer);
+  }, [appReady, splashHoldComplete, showSplash]);
 
   useEffect(() => {
     setBranches([]);
@@ -169,6 +189,11 @@ export default function App() {
 
   return (
     <main className="app-root min-h-screen">
+      {showSplash && (
+        <div className={`app-splash ${splashExiting ? "leaving" : ""}`} aria-hidden="true">
+          <img className="app-splash-logo" src="/apk-build-launcher-transparent.png" alt="" />
+        </div>
+      )}
       <div className="flex min-h-screen">
         <aside className="app-sidebar w-60 border-r p-4">
           <h1 className="text-xl font-semibold tracking-normal">APK Build Launcher</h1>

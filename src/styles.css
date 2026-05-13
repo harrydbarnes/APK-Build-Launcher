@@ -76,6 +76,29 @@ body {
     color: var(--text);
   }
 
+  .app-splash {
+    @apply fixed inset-0 z-50 grid place-items-center;
+    background:
+      radial-gradient(circle at 50% 42%, rgba(132, 255, 23, 0.2), transparent 34%),
+      radial-gradient(circle at 42% 56%, rgba(34, 211, 238, 0.16), transparent 30%),
+      var(--bg);
+    opacity: 1;
+    transition: opacity 360ms ease, visibility 360ms ease;
+  }
+
+  .app-splash.leaving {
+    opacity: 0;
+    visibility: hidden;
+  }
+
+  .app-splash-logo {
+    width: min(56vw, 420px);
+    max-height: 58vh;
+    object-fit: contain;
+    animation: splash-logo-arrive 1050ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+    filter: drop-shadow(0 24px 50px rgba(0, 0, 0, 0.42));
+  }
+
   .app-sidebar {
     background: var(--sidebar);
     border-color: var(--border);
@@ -188,5 +211,35 @@ body {
 
   .button.danger:hover:not(:disabled) {
     background: var(--danger-hover);
+  }
+}
+
+@keyframes splash-logo-arrive {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  28% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+
+  48% {
+    transform: scale(0.96);
+  }
+
+  66%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-splash,
+  .app-splash-logo {
+    animation: none;
+    transition: opacity 160ms ease;
   }
 }
