@@ -1,15 +1,23 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 use zip::ZipArchive;
 
 const ANDROID_CMDLINE_TOOLS_URL: &str = "https://dl.google.com/android/repository/commandlinetools-win-14742923_latest.zip";
+const LICENSE_SENTINEL: &str = ".apk-build-launcher-licenses-ok";
+
+static GIT_CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static GIT_BASH_CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+static JAVA_CACHE: OnceLock<Mutex<HashMap<String, JavaInstall>>> = OnceLock::new();
+static ANDROID_SDK_CACHE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,7 +125,13 @@ pub fn ensure_git<L>(mut log: L) -> Result<PathBuf, String>
 where
     L: FnMut(&str, &str),
 {
+    if let Some(path) = cached_git() {
+        log("success", &format!("Git is available at {}", path.display()));
+        return Ok(path);
+    }
+
     if let Some(path) = git_program().filter(|path| run_output(path, &["--version"], None).is_ok()) {
+        set_cached_git(path.clone());
         log("success", &format!("Git is available at {}", path.display()));
         return Ok(path);
     }
@@ -125,6 +139,7 @@ where
     let destination = tools_root().join("Git");
     let installed = destination.join("cmd").join("git.exe");
     if installed.exists() && run_output(&installed, &["--version"], None).is_ok() {
+        set_cached_git(installed.clone());
         log("success", &format!("Git is available at {}", installed.display()));
         return Ok(installed);
     }
@@ -135,6 +150,7 @@ where
     ensure_clean_dir(&destination)?;
     extract_zip_bytes(&archive, &destination)?;
     if installed.exists() {
+        set_cached_git(installed.clone());
         log("success", &format!("Portable Git installed at {}", destination.display()));
         Ok(installed)
     } else {
@@ -146,12 +162,18 @@ pub fn ensure_java_version<L>(expected: &str, mut log: L) -> Result<JavaInstall,
 where
     L: FnMut(&str, &str),
 {
-    if let Ok(java) = find_java(expected) {
-        log("success", &format!("Java {} is available at {}", expected_major_text(expected), java.java.display()));
+    let major = expected_major_text(expected);
+    if let Some(java) = cached_java(&major) {
+        log("success", &format!("Java {} is available at {}", major, java.java.display()));
         return Ok(java);
     }
 
-    let major = expected_major_text(expected);
+    if let Ok(java) = find_java(expected) {
+        set_cached_java(major.clone(), java.clone());
+        log("success", &format!("Java {} is available at {}", major, java.java.display()));
+        return Ok(java);
+    }
+
     let destination = tools_root().join(format!("jdk-{}", major));
     log("group", &format!("Downloading Temurin JDK {}", major));
     let url = format!(
@@ -166,7 +188,9 @@ where
     ensure_clean_dir(&destination)?;
     copy_dir_all(&home, &destination).map_err(display_err)?;
     let _ = fs::remove_dir_all(&temp);
-    find_java(expected).map_err(|_| format!("JDK {} was downloaded, but java.exe was not found.", major))
+    let java = find_java(expected).map_err(|_| format!("JDK {} was downloaded, but java.exe was not found.", major))?;
+    set_cached_java(major, java.clone());
+    Ok(java)
 }
 
 pub fn ensure_build_tools<L>(
@@ -190,20 +214,33 @@ pub fn ensure_git_bash<L>(mut log: L) -> Result<PathBuf, String>
 where
     L: FnMut(&str, &str),
 {
+    if let Some(path) = cached_git_bash() {
+        log("success", &format!("Git Bash is available at {}", path.display()));
+        return Ok(path);
+    }
+
     if let Some(path) = find_git_bash() {
+        set_cached_git_bash(path.clone());
         log("success", &format!("Git Bash is available at {}", path.display()));
         return Ok(path);
     }
     ensure_git(|level, message| log(level, message))?;
-    find_git_bash().ok_or_else(|| {
+    let bash = find_git_bash().ok_or_else(|| {
         "Portable Git was installed, but Git Bash was not found. Switch to Native Windows mode or reinstall portable Git.".to_string()
-    })
+    })?;
+    set_cached_git_bash(bash.clone());
+    Ok(bash)
 }
 
 pub fn ensure_android_sdk<L>(compile_sdks: &[u32], java: &JavaInstall, mut log: L) -> Result<PathBuf, String>
 where
     L: FnMut(&str, &str),
 {
+    if let Some(sdk) = cached_android_sdk().filter(|sdk| android_packages_installed(sdk, compile_sdks)) {
+        log("success", &format!("Android SDK packages are already installed at {}", sdk.display()));
+        return Ok(sdk);
+    }
+
     let sdk = android_sdk_path().unwrap_or_else(|_| default_android_sdk());
     let sdkmanager = sdk.join("cmdline-tools").join("latest").join("bin").join("sdkmanager.bat");
     if !sdkmanager.exists() {
@@ -220,20 +257,22 @@ where
         log("success", &format!("Android command-line tools installed at {}", destination.display()));
     }
 
-    let mut packages = vec!["platform-tools".to_string()];
     let mut sdks = compile_sdks.to_vec();
     if sdks.is_empty() {
         sdks.push(36);
     }
     sdks.sort();
     sdks.dedup();
-    for sdk_version in sdks {
-        packages.push(format!("platforms;android-{}", sdk_version));
-        packages.push(format!("build-tools;{}.0.0", sdk_version));
+    let packages = missing_android_packages(&sdk, &sdks);
+    if packages.is_empty() {
+        log("success", &format!("Android SDK packages are already installed at {}", sdk.display()));
+        set_cached_android_sdk(sdk.clone());
+        return Ok(sdk);
     }
 
     accept_android_licenses(&sdkmanager, &sdk, java, |level, message| log(level, message))?;
     install_android_packages(&sdkmanager, &sdk, java, &packages, |level, message| log(level, message))?;
+    set_cached_android_sdk(sdk.clone());
     Ok(sdk)
 }
 
@@ -278,6 +317,12 @@ fn accept_android_licenses<L>(
 where
     L: FnMut(&str, &str),
 {
+    let sentinel = sdk.join(LICENSE_SENTINEL);
+    if sentinel.exists() {
+        log("info", "Android SDK licenses were already accepted locally");
+        return Ok(());
+    }
+
     log("info", "Accepting Android SDK licenses locally");
     let input = "y\n".repeat(80);
     let status = sdkmanager_command(sdkmanager, sdk, java)
@@ -294,10 +339,37 @@ where
         })
         .map_err(display_err)?;
     if status.status.success() {
+        fs::write(sentinel, "ok").map_err(display_err)?;
         Ok(())
     } else {
         Err(format!("Android license acceptance failed: {}", String::from_utf8_lossy(&status.stderr)))
     }
+}
+
+fn missing_android_packages(sdk: &Path, sdks: &[u32]) -> Vec<String> {
+    let mut packages = vec![];
+    if !sdk.join("platform-tools").join("adb.exe").exists() {
+        packages.push("platform-tools".to_string());
+    }
+    for sdk_version in sdks {
+        if !sdk.join("platforms").join(format!("android-{}", sdk_version)).join("android.jar").exists() {
+            packages.push(format!("platforms;android-{}", sdk_version));
+        }
+        if !sdk.join("build-tools").join(format!("{}.0.0", sdk_version)).join("aapt2.exe").exists() {
+            packages.push(format!("build-tools;{}.0.0", sdk_version));
+        }
+    }
+    packages
+}
+
+fn android_packages_installed(sdk: &Path, compile_sdks: &[u32]) -> bool {
+    let mut sdks = compile_sdks.to_vec();
+    if sdks.is_empty() {
+        sdks.push(36);
+    }
+    sdks.sort();
+    sdks.dedup();
+    missing_android_packages(sdk, &sdks).is_empty()
 }
 
 fn install_android_packages<L>(
@@ -585,6 +657,51 @@ fn run_output(program: &Path, args: &[&str], envs: Option<&[(&str, &Path)]>) -> 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+fn cached_git() -> Option<PathBuf> {
+    GIT_CACHE.get_or_init(|| Mutex::new(None)).lock().ok()?.clone()
+}
+
+fn set_cached_git(path: PathBuf) {
+    if let Ok(mut cache) = GIT_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(path);
+    }
+}
+
+fn cached_git_bash() -> Option<PathBuf> {
+    GIT_BASH_CACHE.get_or_init(|| Mutex::new(None)).lock().ok()?.clone()
+}
+
+fn set_cached_git_bash(path: PathBuf) {
+    if let Ok(mut cache) = GIT_BASH_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(path);
+    }
+}
+
+fn cached_java(major: &str) -> Option<JavaInstall> {
+    JAVA_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()?
+        .get(major)
+        .cloned()
+}
+
+fn set_cached_java(major: String, java: JavaInstall) {
+    if let Ok(mut cache) = JAVA_CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+        cache.insert(major, java);
+    }
+}
+
+fn cached_android_sdk() -> Option<PathBuf> {
+    ANDROID_SDK_CACHE.get_or_init(|| Mutex::new(None)).lock().ok()?.clone()
+}
+
+fn set_cached_android_sdk(path: PathBuf) {
+    if let Ok(mut cache) = ANDROID_SDK_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *cache = Some(path);
     }
 }
 

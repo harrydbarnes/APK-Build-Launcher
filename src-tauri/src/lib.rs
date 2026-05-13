@@ -198,16 +198,21 @@ fn list_branches(app: AppHandle, repo_url: String) -> Result<Vec<String>, String
 #[tauri::command]
 fn prepare_repo(app: AppHandle, repo_url: String, ref_name: String) -> Result<String, String> {
     tools::ensure_git(|level, message| log(&app, "tools", level, message))?;
-    prepare_repo_inner(repo_url, ref_name)
+    prepare_repo_inner(repo_url, ref_name, true)
 }
 
-fn prepare_repo_inner(repo_url: String, ref_name: String) -> Result<String, String> {
+fn prepare_repo_inner(repo_url: String, ref_name: String, update_remote: bool) -> Result<String, String> {
     let repo_path = repo_path_for(&repo_url)?;
     if repo_path.exists() {
-        run_checked(
-            git_spec(["fetch", "--all", "--prune"]).cwd(&repo_path),
-            None,
-        )?;
+        if update_remote {
+            run_checked(
+                git_spec(["fetch", "--all", "--prune"]).cwd(&repo_path),
+                None,
+            )?;
+        } else if repo_matches_ref(&repo_path, &ref_name) {
+            protect_local_properties(&repo_path)?;
+            return Ok(repo_path.display().to_string());
+        }
     } else {
         ensure_dir(&configured_repo_root())?;
         let repo_path_text = repo_path.to_string_lossy().to_string();
@@ -326,7 +331,7 @@ fn cancel_build(state: State<BuildState>) -> Result<(), String> {
 fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, request: BuildRequest) -> Result<BuildResult, String> {
     log(&app, &build_id, "group", "Preparing repository");
     tools::ensure_git(|level, message| log(&app, &build_id, level, message))?;
-    let repo_path = PathBuf::from(prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone())?);
+    let repo_path = PathBuf::from(prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone(), false)?);
     log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
 
     let doc = load_workflow(&request.workflow_path)?;
@@ -535,6 +540,11 @@ impl Context {
         let gradle_home = default_gradle_user_home();
         ensure_dir(&gradle_home)?;
         env.entry("GRADLE_USER_HOME".to_string()).or_insert_with(|| gradle_home.to_string_lossy().to_string());
+        merge_env_value(
+            &mut env,
+            "GRADLE_OPTS",
+            "-Dorg.gradle.caching=true -Dorg.gradle.parallel=true -Dorg.gradle.daemon=true",
+        );
         if let Some(java_home) = &self.java_home {
             env.entry("JAVA_HOME".to_string()).or_insert_with(|| java_home.to_string_lossy().to_string());
         }
@@ -688,6 +698,33 @@ fn checkout_ref(repo_path: &Path, ref_name: &str) -> Result<(), String> {
         };
         run_checked(git_spec(["checkout", &checkout_target]).cwd(repo_path), None)
     }
+}
+
+fn repo_matches_ref(repo_path: &Path, ref_name: &str) -> bool {
+    let trimmed = ref_name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let current_branch = run_output(git_spec(["rev-parse", "--abbrev-ref", "HEAD"]).cwd(repo_path), None).unwrap_or_default();
+    let current_branch = current_branch.trim();
+    let pr_branch = format!("pr-{}", trimmed);
+    if current_branch == trimmed || (trimmed.chars().all(|c| c.is_ascii_digit()) && current_branch == pr_branch.as_str()) {
+        return true;
+    }
+
+    let Ok(head) = run_output(git_spec(["rev-parse", "HEAD"]).cwd(repo_path), None) else {
+        return false;
+    };
+    let target = if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        format!("pr-{}", trimmed)
+    } else {
+        format!("origin/{}", trimmed)
+    };
+    let Ok(target_head) = run_output(git_spec(["rev-parse", &target]).cwd(repo_path), None) else {
+        return false;
+    };
+    head.trim() == target_head.trim()
 }
 
 fn parse_remote_branches(output: &str) -> Vec<String> {
@@ -1033,6 +1070,19 @@ fn run_output(spec: CommandSpec, envs: Option<&HashMap<String, String>>) -> Resu
 
 fn value_map_to_strings(map: &BTreeMap<String, Value>) -> HashMap<String, String> {
     map.iter().filter_map(|(key, value)| value_to_string(value).map(|text| (key.clone(), text))).collect()
+}
+
+fn merge_env_value(env: &mut HashMap<String, String>, key: &str, addition: &str) {
+    env.entry(key.to_string())
+        .and_modify(|current| {
+            if !current.contains(addition) {
+                if !current.trim().is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(addition);
+            }
+        })
+        .or_insert_with(|| addition.to_string());
 }
 
 fn value_to_string(value: &Value) -> Option<String> {

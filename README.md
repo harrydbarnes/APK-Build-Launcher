@@ -50,7 +50,9 @@ The app is designed to run from user-writable locations on locked-down work lapt
 
 The Tools tab shows what is available and has an Install / Repair Tools button. The clone, branch lookup, and build flows also bootstrap missing tools automatically.
 
-Existing per-user installs still work. The app checks `PATH`, `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `%LOCALAPPDATA%\Programs\Git`, and common per-user Java locations before downloading anything. Gradle downloads are kept under `%LOCALAPPDATA%\ApkBuildLauncher\gradle`.
+Existing per-user installs still work. The app checks `PATH`, `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `%LOCALAPPDATA%\Programs\Git`, and common per-user Java locations before downloading anything. Gradle downloads are kept under `%LOCALAPPDATA%\ApkBuildLauncher\gradle`, with Gradle caching, parallel execution, and the daemon enabled for build steps.
+
+Repeat builds reuse resolved tool paths in memory, skip already-installed Android SDK packages, skip license acceptance after the first successful local acceptance, and avoid fetching a repository again when the selected ref is already checked out.
 
 ## Security Notes
 
