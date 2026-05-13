@@ -5,6 +5,20 @@ export type AppConfig = {
   defaultOutputFolder: string;
   shellMode: ShellMode;
   theme: "system" | "light" | "dark";
+  presets: BuildPreset[];
+  defaultPresetId?: string | null;
+};
+
+export type BuildPreset = {
+  id: string;
+  name: string;
+  repoUrl: string;
+  refName: string;
+  workflowPath: string;
+  jobId: string;
+  outputFolder: string;
+  shellMode: ShellMode;
+  updatedAt: string;
 };
 
 export type WorkflowSummary = {
