@@ -217,8 +217,22 @@ export default function App() {
           <img className="app-splash-logo" src="/apk-build-launcher-transparent.png" alt="" />
         </div>
       )}
-      <div className="flex min-h-screen">
-        <aside className="app-sidebar w-60 border-r p-4">
+      <div className="app-shell flex min-h-screen flex-col">
+        <header className="app-toolbar">
+          <div className="toolbar-controls" aria-hidden="true">
+            <span>&lsaquo;</span>
+            <span>&rsaquo;</span>
+          </div>
+          <div className="toolbar-menu" aria-hidden="true">
+            <span>File</span>
+            <span>Edit</span>
+            <span>View</span>
+            <span>Window</span>
+            <span>Help</span>
+          </div>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <aside className="app-sidebar w-60 p-4">
           <h1 className="text-xl font-semibold tracking-normal">APK Build Launcher</h1>
           <p className="text-muted mt-2 text-sm">Workflow Adapter for Android APK builds</p>
           <nav className="mt-8 grid gap-1">
@@ -236,9 +250,9 @@ export default function App() {
             <div className="strong-text font-medium">Status</div>
             <div className="mt-1 break-words">{status}</div>
           </div>
-        </aside>
+          </aside>
 
-        <section className="flex-1 overflow-auto p-6">
+          <section className="app-content-panel flex-1 overflow-auto p-6">
           {activeTab === "Home" && (
             <Panel title="Home">
               <div className="grid gap-4 lg:grid-cols-2">
@@ -395,7 +409,8 @@ export default function App() {
               <button className="button mt-5" onClick={() => saveSettings(config)}>Save Settings</button>
             </Panel>
           )}
-        </section>
+          </section>
+        </div>
       </div>
     </main>
   );

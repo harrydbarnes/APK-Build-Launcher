@@ -5,6 +5,7 @@
 :root {
   --bg: #09090b;
   --sidebar: #18181b;
+  --toolbar-text: #d4d4d8;
   --surface: #18181b;
   --surface-2: #27272a;
   --field: #18181b;
@@ -24,7 +25,8 @@
 
 html[data-theme="light"] {
   --bg: #f8fafc;
-  --sidebar: #ffffff;
+  --sidebar: #f3efd9;
+  --toolbar-text: #74716a;
   --surface: #ffffff;
   --surface-2: #f1f5f9;
   --field: #ffffff;
@@ -45,7 +47,8 @@ html[data-theme="light"] {
 @media (prefers-color-scheme: light) {
   html[data-theme="system"] {
     --bg: #f8fafc;
-    --sidebar: #ffffff;
+    --sidebar: #f3efd9;
+    --toolbar-text: #74716a;
     --surface: #ffffff;
     --surface-2: #f1f5f9;
     --field: #ffffff;
@@ -76,6 +79,10 @@ body {
     color: var(--text);
   }
 
+  .app-shell {
+    background: var(--sidebar);
+  }
+
   .app-splash {
     @apply fixed inset-0 z-50 grid place-items-center;
     background:
@@ -101,7 +108,40 @@ body {
 
   .app-sidebar {
     background: var(--sidebar);
-    border-color: var(--border);
+  }
+
+  .app-toolbar {
+    @apply flex h-10 shrink-0 items-center gap-5 px-2 text-sm;
+    background: var(--sidebar);
+    color: var(--toolbar-text);
+  }
+
+  .toolbar-controls {
+    @apply flex items-center gap-4 text-2xl leading-none;
+  }
+
+  .toolbar-controls span {
+    @apply block;
+    color: var(--toolbar-text);
+  }
+
+  .toolbar-menu {
+    @apply flex items-center gap-8;
+  }
+
+  .toolbar-menu span {
+    @apply text-base leading-none;
+    color: var(--toolbar-text);
+  }
+
+  .app-content-panel {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-right: 0;
+    border-top-left-radius: 18px;
+    border-bottom-left-radius: 18px;
+    box-shadow: -1px 0 0 rgba(255, 255, 255, 0.02), 0 0 0 1px rgba(0, 0, 0, 0.04);
   }
 
   .tab-button {
