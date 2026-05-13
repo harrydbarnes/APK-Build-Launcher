@@ -1,7 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./tauri";
-import type { AppConfig, BuildResult, JobSummary, LogEvent, ShellMode, WorkflowSummary } from "./types";
+import type { AppConfig, BuildResult, JobSummary, LogEvent, ShellMode, ToolProbe, ToolStatus, WorkflowSummary } from "./types";
 
 const emptyConfig: AppConfig = {
   defaultRepoFolder: "",
@@ -10,7 +10,7 @@ const emptyConfig: AppConfig = {
   theme: "system",
 };
 
-const tabs = ["Home", "Secrets", "Workflows", "Logs", "Settings"] as const;
+const tabs = ["Home", "Tools", "Secrets", "Workflows", "Logs", "Settings"] as const;
 type Tab = (typeof tabs)[number];
 
 export default function App() {
@@ -30,6 +30,8 @@ export default function App() {
   const [status, setStatus] = useState("Ready");
   const [result, setResult] = useState<BuildResult | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
+  const [toolStatus, setToolStatus] = useState<ToolStatus | null>(null);
+  const [installingTools, setInstallingTools] = useState(false);
   const [loadingBranches, setLoadingBranches] = useState(false);
   const [branchMessage, setBranchMessage] = useState("");
   const [appReady, setAppReady] = useState(false);
@@ -43,6 +45,7 @@ export default function App() {
       setOutputFolder(loaded.defaultOutputFolder);
     }).catch((error) => setStatus(String(error)))
       .finally(() => setAppReady(true));
+    api.getToolStatus().then(setToolStatus).catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -97,8 +100,10 @@ export default function App() {
 
     setLoadingBranches(true);
     setBranchMessage("Loading branches...");
+    setLogs([]);
     try {
       const loaded = await api.listBranches(trimmedRepoUrl);
+      api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setBranches(loaded);
       if (loaded.length && (!refName.trim() || !loaded.includes(refName.trim()))) {
         setRefName(loaded[0]);
@@ -115,10 +120,11 @@ export default function App() {
 
   async function prepareAndDetect() {
     setBusy(true);
-    setStatus("Cloning or updating repository...");
+    setStatus("Preparing tools and repository...");
     setResult(null);
     try {
       const path = await api.prepareRepo(repoUrl.trim(), refName.trim());
+      api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setRepoPath(path);
       setStatus("Detecting workflow files...");
       const detected = await api.detectWorkflows(path);
@@ -167,6 +173,7 @@ export default function App() {
         jobId,
         shellMode: config.shellMode,
       });
+      api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setResult(build);
       setStatus(`Build complete: ${build.apkFiles.length} APK file(s) copied`);
     } catch (error) {
@@ -179,6 +186,22 @@ export default function App() {
   async function cancelBuild() {
     await api.cancelBuild();
     setStatus("Cancellation requested");
+  }
+
+  async function installTools() {
+    setInstallingTools(true);
+    setLogs([]);
+    setActiveTab("Logs");
+    setStatus("Installing local build tools...");
+    try {
+      const status = await api.installBuildTools();
+      setToolStatus(status);
+      setStatus("Local build tools are ready");
+    } catch (error) {
+      setStatus(String(error));
+    } finally {
+      setInstallingTools(false);
+    }
   }
 
   async function saveSettings(next: AppConfig) {
@@ -272,9 +295,26 @@ export default function App() {
               <div className="mt-6 flex flex-wrap gap-3">
                 <button className="button" disabled={busy || !repoUrl || !refName} onClick={prepareAndDetect}>Clone / Update & Detect</button>
                 <button className="button" disabled={busy || !repoUrl || !outputFolder || !workflowPath || !jobId} onClick={startBuild}>Build APK</button>
+                <button className="button secondary" disabled={busy || installingTools} onClick={installTools}>Install / Repair Tools</button>
                 <button className="button danger" disabled={!busy} onClick={cancelBuild}>Cancel</button>
               </div>
               {selectedJob && <p className="text-muted mt-4 text-sm">Selected job runs on {selectedJob.runsOn} with {selectedJob.stepCount} steps. It will execute locally on Windows.</p>}
+            </Panel>
+          )}
+
+          {activeTab === "Tools" && (
+            <Panel title="Tools">
+              <div className="grid gap-3 lg:grid-cols-2">
+                <ToolRow label="Git" probe={toolStatus?.git} />
+                <ToolRow label="Java 17" probe={toolStatus?.java} />
+                <ToolRow label="Android SDK" probe={toolStatus?.androidSdk} />
+                <ToolRow label="Git Bash" probe={toolStatus?.gitBash} />
+              </div>
+              {toolStatus?.toolsRoot && <p className="text-muted mt-4 break-words text-sm">Tools folder: {toolStatus.toolsRoot}</p>}
+              <div className="mt-5 flex flex-wrap gap-3">
+                <button className="button" disabled={busy || installingTools} onClick={installTools}>{installingTools ? "Installing..." : "Install / Repair Tools"}</button>
+                <button className="button secondary" disabled={installingTools} onClick={() => api.getToolStatus().then(setToolStatus).catch((error) => setStatus(String(error)))}>Refresh</button>
+              </div>
             </Panel>
           )}
 
@@ -376,6 +416,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span>{label}</span>
       {children}
     </label>
+  );
+}
+
+function ToolRow({ label, probe }: { label: string; probe?: ToolProbe }) {
+  const available = probe?.available ?? false;
+  return (
+    <div className="surface-card rounded-md border p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="font-medium">{label}</h2>
+          <p className="text-muted mt-1 text-sm">{probe?.message ?? "Checking..."}</p>
+          {probe?.path && <p className="text-subtle mt-2 break-words text-xs">{probe.path}</p>}
+        </div>
+        <span className={`tool-pill ${available ? "ready" : "missing"}`}>{available ? "Ready" : "Missing"}</span>
+      </div>
+    </div>
   );
 }
 

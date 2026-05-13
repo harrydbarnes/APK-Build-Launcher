@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { AppConfig, BranchSummary, BuildRequest, BuildResult, SecretSummary, WorkflowSummary } from "./types";
+import type { AppConfig, BranchSummary, BuildRequest, BuildResult, SecretSummary, ToolStatus, WorkflowSummary } from "./types";
 
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
@@ -17,6 +17,8 @@ export const api = {
   getSecrets: (repoUrl: string) => invoke<SecretSummary>("get_secrets", { repoUrl }),
   saveSecrets: (repoUrl: string, secrets: Record<string, string>) =>
     invoke<void>("save_secrets", { repoUrl, secrets }),
+  getToolStatus: () => invoke<ToolStatus>("get_tool_status"),
+  installBuildTools: () => invoke<ToolStatus>("install_build_tools"),
   runBuild: (request: BuildRequest) => invoke<BuildResult>("run_build", { request }),
   cancelBuild: () => invoke<void>("cancel_build"),
 };

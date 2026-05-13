@@ -165,6 +165,20 @@ body {
     color: var(--success);
   }
 
+  .tool-pill {
+    @apply shrink-0 rounded-md px-2 py-1 text-xs font-medium;
+  }
+
+  .tool-pill.ready {
+    background: rgba(16, 185, 129, 0.18);
+    color: var(--success);
+  }
+
+  .tool-pill.missing {
+    background: rgba(239, 68, 68, 0.16);
+    color: var(--danger-hover);
+  }
+
   .input {
     @apply w-full rounded-md border px-3 py-2 text-sm outline-none transition;
     background: var(--field);

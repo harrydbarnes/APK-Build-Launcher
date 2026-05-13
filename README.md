@@ -42,17 +42,15 @@ The default repo folder can be changed in Settings. The backend honors that fold
 
 ## Windows 10/11 Without Admin Rights
 
-The app is designed to run from user-writable locations. For a laptop where you cannot install machine-wide tools, use per-user installs:
+The app is designed to run from user-writable locations on locked-down work laptops. Use the NSIS `.exe` installer, which is configured for current-user installation. If a required build tool is missing, the launcher downloads and installs it under `%LOCALAPPDATA%\ApkBuildLauncher\tools` without requiring admin rights:
 
-- Git for Windows: install for the current user, or make sure `git.exe` is in `PATH`. The app also checks `%LOCALAPPDATA%\Programs\Git\cmd\git.exe`.
-- Portable Git: unpack Git for Windows to `%LOCALAPPDATA%\ApkBuildLauncher\tools\Git`. The app checks `cmd\git.exe` for clone and branch lookup, and `bin\bash.exe` for Git Bash mode.
-- Git Bash mode: install Git for Windows for the current user, or use the portable Git location above.
-- Java: install JDK 17 and set `JAVA_HOME`, make sure `java.exe` is in `PATH`, or unpack a JDK to `%LOCALAPPDATA%\ApkBuildLauncher\tools\jdk-17`.
-- Android SDK: set `ANDROID_HOME` or `ANDROID_SDK_ROOT`, or install the SDK at `%LOCALAPPDATA%\Android\Sdk`.
+- Portable Git / Git Bash: downloaded from the latest Git for Windows MinGit release when cloning or Bash mode needs it.
+- Java: downloaded as a portable Temurin/OpenJDK JDK from Adoptium when a workflow uses `actions/setup-java`.
+- Android SDK: downloaded from Google's Android command-line tools package, then `sdkmanager` installs `platform-tools`, the detected `compileSdk` platform, and matching build tools.
 
-Cloning and branch lookup only require Git. Java 17 is checked when a build actually needs Java, and the app passes the detected JDK into build steps as `JAVA_HOME` and at the front of `PATH`.
+The Tools tab shows what is available and has an Install / Repair Tools button. The clone, branch lookup, and build flows also bootstrap missing tools automatically.
 
-When the SDK is found under `%LOCALAPPDATA%\Android\Sdk`, the app passes that path to build steps as both `ANDROID_HOME` and `ANDROID_SDK_ROOT`.
+Existing per-user installs still work. The app checks `PATH`, `JAVA_HOME`, `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `%LOCALAPPDATA%\Programs\Git`, and common per-user Java locations before downloading anything. Gradle downloads are kept under `%LOCALAPPDATA%\ApkBuildLauncher\gradle`.
 
 ## Security Notes
 

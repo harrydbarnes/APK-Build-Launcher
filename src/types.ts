@@ -29,6 +29,20 @@ export type SecretSummary = {
   names: string[];
 };
 
+export type ToolProbe = {
+  available: boolean;
+  path?: string | null;
+  message: string;
+};
+
+export type ToolStatus = {
+  toolsRoot: string;
+  git: ToolProbe;
+  java: ToolProbe;
+  androidSdk: ToolProbe;
+  gitBash: ToolProbe;
+};
+
 export type BuildRequest = {
   repoUrl: string;
   refName: string;

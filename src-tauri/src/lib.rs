@@ -18,6 +18,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, State};
 
+mod tools;
+
 #[derive(Default)]
 struct BuildState {
     cancel: Arc<AtomicBool>,
@@ -75,6 +77,16 @@ struct JobSummary {
 struct SecretSummary {
     repo_key: String,
     names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToolStatusResponse {
+    tools_root: String,
+    git: tools::ToolProbe,
+    java: tools::ToolProbe,
+    android_sdk: tools::ToolProbe,
+    git_bash: tools::ToolProbe,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,6 +161,8 @@ pub fn run() {
             detect_workflows,
             get_secrets,
             save_secrets,
+            get_tool_status,
+            install_build_tools,
             run_build,
             cancel_build
         ])
@@ -175,15 +189,19 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_branches(repo_url: String) -> Result<Vec<String>, String> {
-    validate_git()?;
+fn list_branches(app: AppHandle, repo_url: String) -> Result<Vec<String>, String> {
+    tools::ensure_git(|level, message| log(&app, "tools", level, message))?;
     let output = run_output(git_spec(["ls-remote", "--symref", repo_url.as_str(), "HEAD", "refs/heads/*"]), None)?;
     Ok(parse_remote_branches(&output))
 }
 
 #[tauri::command]
-fn prepare_repo(repo_url: String, ref_name: String) -> Result<String, String> {
-    validate_git()?;
+fn prepare_repo(app: AppHandle, repo_url: String, ref_name: String) -> Result<String, String> {
+    tools::ensure_git(|level, message| log(&app, "tools", level, message))?;
+    prepare_repo_inner(repo_url, ref_name)
+}
+
+fn prepare_repo_inner(repo_url: String, ref_name: String) -> Result<String, String> {
     let repo_path = repo_path_for(&repo_url)?;
     if repo_path.exists() {
         run_checked(
@@ -260,6 +278,28 @@ fn save_secrets(repo_url: String, secrets: HashMap<String, String>) -> Result<()
 }
 
 #[tauri::command]
+fn get_tool_status() -> Result<ToolStatusResponse, String> {
+    let status = tools::tool_status();
+    Ok(ToolStatusResponse {
+        tools_root: status.tools_root,
+        git: status.git,
+        java: status.java,
+        android_sdk: status.android_sdk,
+        git_bash: status.git_bash,
+    })
+}
+
+#[tauri::command]
+fn install_build_tools(app: AppHandle) -> Result<ToolStatusResponse, String> {
+    log(&app, "tools", "group", "Preparing local build tools");
+    tools::ensure_git(|level, message| log(&app, "tools", level, message))?;
+    let java = tools::ensure_java_version("17", |level, message| log(&app, "tools", level, message))?;
+    tools::ensure_android_sdk(&[36], &java, |level, message| log(&app, "tools", level, message))?;
+    log(&app, "tools", "success", "Local build tools are ready");
+    get_tool_status()
+}
+
+#[tauri::command]
 fn run_build(app: AppHandle, state: State<BuildState>, request: BuildRequest) -> Result<BuildResult, String> {
     let build_id = format!("build-{}", Local::now().format("%Y%m%d%H%M%S"));
     {
@@ -285,13 +325,23 @@ fn cancel_build(state: State<BuildState>) -> Result<(), String> {
 
 fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, request: BuildRequest) -> Result<BuildResult, String> {
     log(&app, &build_id, "group", "Preparing repository");
-    let java = validate_tools(matches!(request.shell_mode, ShellMode::Bash))?;
-    let repo_path = PathBuf::from(prepare_repo(request.repo_url.clone(), request.ref_name.clone())?);
+    tools::ensure_git(|level, message| log(&app, &build_id, level, message))?;
+    let repo_path = PathBuf::from(prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone())?);
     log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
 
-    let android_sdk = android_sdk_path()?;
     let doc = load_workflow(&request.workflow_path)?;
     let job = doc.jobs.get(&request.job_id).ok_or_else(|| format!("Job '{}' was not found", request.job_id))?.clone();
+    let java_version = requested_java_version(&job);
+    let compile_sdks = infer_compile_sdks(&repo_path);
+    log(&app, &build_id, "group", "Preparing local build tools");
+    let installed = tools::ensure_build_tools(
+        &java_version,
+        &compile_sdks,
+        matches!(request.shell_mode, ShellMode::Bash),
+        |level, message| log(&app, &build_id, level, message),
+    )?;
+    let java = installed.java;
+    let android_sdk = installed.android_sdk;
     let secrets = unprotect_secret_store(&stable_id(&request.repo_url))?;
     let mut missing = required_secrets(&doc, &job)
         .into_iter()
@@ -346,7 +396,7 @@ fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: 
         }
         if lower.starts_with("actions/setup-java@") {
             let version = step.with.get("java-version").and_then(value_to_string).unwrap_or_else(|| "17".to_string());
-            let java = validate_java_version(&version)?;
+            let java = tools::ensure_java_version(&version, |level, message| log(app, build_id, level, message))?;
             log(app, build_id, "success", &format!("Java {} is available at {}", version, java.java.display()));
             return Ok(());
         }
@@ -482,6 +532,9 @@ impl Context {
         let android_sdk = self.android_sdk.to_string_lossy().to_string();
         env.entry("ANDROID_HOME".to_string()).or_insert_with(|| android_sdk.clone());
         env.entry("ANDROID_SDK_ROOT".to_string()).or_insert(android_sdk);
+        let gradle_home = default_gradle_user_home();
+        ensure_dir(&gradle_home)?;
+        env.entry("GRADLE_USER_HOME".to_string()).or_insert_with(|| gradle_home.to_string_lossy().to_string());
         if let Some(java_home) = &self.java_home {
             env.entry("JAVA_HOME".to_string()).or_insert_with(|| java_home.to_string_lossy().to_string());
         }
@@ -550,6 +603,69 @@ fn required_secrets_in_text(text: &str) -> HashSet<String> {
         }
     }
     names
+}
+
+fn requested_java_version(job: &JobDoc) -> String {
+    job.steps
+        .iter()
+        .find_map(|step| {
+            let uses = step.uses.as_ref()?.to_ascii_lowercase();
+            if !uses.starts_with("actions/setup-java@") {
+                return None;
+            }
+            step.with.get("java-version").and_then(value_to_string)
+        })
+        .unwrap_or_else(|| "17".to_string())
+}
+
+fn infer_compile_sdks(repo_path: &Path) -> Vec<u32> {
+    let mut versions = HashSet::new();
+    collect_compile_sdks(repo_path, &mut versions, 0);
+    let mut versions = versions.into_iter().collect::<Vec<_>>();
+    versions.sort();
+    versions
+}
+
+fn collect_compile_sdks(path: &Path, versions: &mut HashSet<u32>, depth: usize) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        if path.is_dir() {
+            if matches!(name, ".git" | "build" | ".gradle") {
+                continue;
+            }
+            collect_compile_sdks(&path, versions, depth + 1);
+            continue;
+        }
+        if !matches!(name, "build.gradle" | "build.gradle.kts") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with("compileSdk") {
+                continue;
+            }
+            if let Some(version) = trimmed
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u32>()
+                .ok()
+            {
+                versions.insert(version);
+            }
+        }
+    }
 }
 
 fn load_workflow(path: &str) -> Result<WorkflowDoc, String> {
@@ -946,28 +1062,11 @@ fn runs_on_to_string(value: &Value) -> String {
 }
 
 fn find_git_bash() -> Option<PathBuf> {
-    let mut candidates = vec![
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ].into_iter().map(PathBuf::from).collect::<Vec<_>>();
-    if let Some(local_app_data) = dirs::data_local_dir() {
-        candidates.push(local_app_data.join("ApkBuildLauncher").join("tools").join("Git").join("bin").join("bash.exe"));
-        candidates.push(local_app_data.join("Programs").join("Git").join("bin").join("bash.exe"));
-    }
-    candidates.into_iter().find(|path| path.exists())
+    tools::find_git_bash()
 }
 
 fn git_program() -> PathBuf {
-    let mut candidates = vec![
-        PathBuf::from("git"),
-        PathBuf::from(r"C:\Program Files\Git\cmd\git.exe"),
-        PathBuf::from(r"C:\Program Files (x86)\Git\cmd\git.exe"),
-    ];
-    if let Some(local_app_data) = dirs::data_local_dir() {
-        candidates.push(local_app_data.join("ApkBuildLauncher").join("tools").join("Git").join("cmd").join("git.exe"));
-        candidates.push(local_app_data.join("Programs").join("Git").join("cmd").join("git.exe"));
-    }
-    candidates.into_iter().find(|path| path.exists()).unwrap_or_else(|| PathBuf::from("git"))
+    tools::git_program().unwrap_or_else(|| PathBuf::from("git"))
 }
 
 fn git_spec<I, S>(args: I) -> CommandSpec
@@ -1076,6 +1175,10 @@ fn config_root() -> PathBuf {
 
 fn default_repo_root() -> PathBuf {
     default_app_data().join("ApkBuildLauncher").join("repos")
+}
+
+fn default_gradle_user_home() -> PathBuf {
+    default_app_data().join("ApkBuildLauncher").join("gradle")
 }
 
 fn configured_repo_root() -> PathBuf {
