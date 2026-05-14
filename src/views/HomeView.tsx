@@ -46,13 +46,13 @@ export function HomeView({ launcher }: { launcher: BuildLauncher }) {
         <div className="form-grid">
           <Field label="GitHub repo URL" hint={branchMessage}>
             <div className="input-row">
-              <input
-                className="input"
-                value={draft.repoUrl}
-                onChange={(event) => launcher.updateDraft({ repoUrl: event.target.value })}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    void launcher.loadBranches();
+                <input
+                  className="input"
+                  value={draft.repoUrl}
+                  onChange={(event) => launcher.setRepoUrl(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      void launcher.loadBranches();
                   }
                 }}
                 placeholder="https://github.com/org/repo.git"
