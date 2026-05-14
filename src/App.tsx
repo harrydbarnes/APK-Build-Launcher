@@ -111,10 +111,7 @@ export default function App() {
 
         <section className="content-shell">
           <header className="topbar">
-            <div>
-              <p>v2 workspace</p>
-              <h2>{launcher.selectedPresetId ? "Preset build" : "Custom build"}</h2>
-            </div>
+            <h2 aria-live="polite">{navItems.find((i) => i.id === launcher.activeView)?.label ?? "Home"}</h2>
             <div className="topbar-actions">
               <BuildStatePill state={launcher.buildState} />
               <button title="Refresh tool status" onClick={launcher.refreshTools}>
