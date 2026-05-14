@@ -122,11 +122,13 @@ export function useBuildLauncher() {
         const defaultPreset = normalized.presets.find((preset) => preset.id === normalized.defaultPresetId);
         setConfig(normalized);
         setSelectedPresetId(defaultPreset?.id ?? null);
-        setDraft(defaultPreset ? draftFromPreset(defaultPreset) : {
+        const initialDraft = defaultPreset ? draftFromPreset(defaultPreset) : {
           ...emptyDraft,
           outputFolder: normalized.defaultOutputFolder,
           shellMode: normalized.shellMode,
-        });
+        };
+        previousRepoUrl.current = initialDraft.repoUrl;
+        setDraft(initialDraft);
       })
       .catch((error) => setStatus(String(error)))
       .finally(() => setAppReady(true));
@@ -492,10 +494,14 @@ export function useBuildLauncher() {
 
   const selectPreset = useCallback((preset: BuildPreset) => {
     setSelectedPresetId(preset.id);
-    setDraft(draftFromPreset(preset));
+    const newDraft = draftFromPreset(preset);
+    previousRepoUrl.current = newDraft.repoUrl;
+    setDraft(newDraft);
     setWorkflows([]);
     setRepoPath("");
     setBranchMessage("");
+    setBranches([]);
+    setSavedSecretNames([]);
     setStatus(`Loaded preset: ${preset.name}`);
   }, []);
 
