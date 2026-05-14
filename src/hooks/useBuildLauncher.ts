@@ -101,10 +101,10 @@ function resolveBranchHint(branches: string[], branchHint: string) {
   if (branches.includes(normalizedHint)) {
     return normalizedHint;
   }
-  return branches
+  const matches = branches
     .filter((branch) => normalizedHint.startsWith(`${branch}/`))
-    .sort((left, right) => right.length - left.length)
-    .at(0) ?? normalizedHint;
+    .sort((left, right) => right.length - left.length);
+  return matches.length ? matches[0] : normalizedHint;
 }
 
 function normalizeDraftRepoInput(draft: BuildDraft): BuildDraft {
