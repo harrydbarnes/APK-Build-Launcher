@@ -155,7 +155,7 @@ export function HomeView({ launcher }: { launcher: BuildLauncher }) {
           <ReadinessBadge label="Workflow" ready={readiness.workflowReady} />
           <ReadinessBadge label="Job" ready={readiness.jobReady} />
           <ReadinessBadge label="Output folder" ready={readiness.outputReady} />
-          <ReadinessBadge label="Secrets" ready={readiness.secretsReady} />
+          <ReadinessBadge label="Optional secrets" ready={readiness.secretsReady} />
           <ReadinessBadge label="Shell mode" ready={readiness.bashReady} />
         </div>
         <div className="tool-grid compact">
@@ -166,7 +166,7 @@ export function HomeView({ launcher }: { launcher: BuildLauncher }) {
         </div>
       </Panel>
 
-      <Panel title="Secrets" kicker="Stored per repo">
+      <Panel title="Secrets" kicker="Stored per repo, optional">
         <div className="secret-grid">
           {secretNames.map((name) => (
             <Field key={name} label={`${name}${savedSecretNames.includes(name) ? " saved" : ""}`}>

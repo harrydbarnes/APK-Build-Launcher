@@ -368,14 +368,6 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
     let java = installed.java;
     let android_sdk = installed.android_sdk;
     let secrets = unprotect_secret_store(&stable_id(&request.repo_url))?;
-    let mut missing = required_secrets(&doc, &job)
-        .into_iter()
-        .filter(|name| !secrets.contains_key(name))
-        .collect::<Vec<_>>();
-    missing.sort();
-    if !missing.is_empty() {
-        return Err(format!("Missing local secrets: {}. Add them on the Secrets screen.", missing.join(", ")));
-    }
 
     let context = Context {
         workspace: repo_path.clone(),
@@ -585,7 +577,7 @@ impl Context {
 fn replace_expressions(input: &str, context: &Context, env: &HashMap<String, String>) -> Result<String, String> {
     let mut output = input.to_string();
     for name in required_secrets_in_text(input) {
-        let value = context.secrets.get(&name).ok_or_else(|| format!("Missing secret {}", name))?;
+        let value = context.secrets.get(&name).map(String::as_str).unwrap_or("");
         output = output.replace(&format!("${{{{ secrets.{} }}}}", name), value);
     }
     for (key, value) in env {
@@ -594,26 +586,6 @@ fn replace_expressions(input: &str, context: &Context, env: &HashMap<String, Str
     output = output.replace("${{ github.workspace }}", context.workspace.to_string_lossy().as_ref());
     output = output.replace("${{ github.ref_name }}", &context.ref_name);
     Ok(output)
-}
-
-fn required_secrets(doc: &WorkflowDoc, job: &JobDoc) -> HashSet<String> {
-    let mut names = HashSet::new();
-    for value in doc.env.values().chain(job.env.values()) {
-        if let Some(text) = value_to_string(value) {
-            names.extend(required_secrets_in_text(&text));
-        }
-    }
-    for step in &job.steps {
-        if let Some(run) = &step.run {
-            names.extend(required_secrets_in_text(run));
-        }
-        for value in step.env.values().chain(step.with.values()) {
-            if let Some(text) = value_to_string(value) {
-                names.extend(required_secrets_in_text(&text));
-            }
-        }
-    }
-    names
 }
 
 fn required_secrets_in_text(text: &str) -> HashSet<String> {
