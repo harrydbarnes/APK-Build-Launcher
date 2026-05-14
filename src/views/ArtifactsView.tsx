@@ -1,9 +1,7 @@
-import type { useBuildLauncher } from "../hooks/useBuildLauncher";
+import type { BuildLauncher } from "../hooks/useBuildLauncher";
 import { Button, Icon, Panel } from "../components/ui";
 
-type Launcher = ReturnType<typeof useBuildLauncher>;
-
-export function ArtifactsView({ launcher }: { launcher: Launcher }) {
+export function ArtifactsView({ launcher }: { launcher: BuildLauncher }) {
   const copyText = async (text: string) => {
     await navigator.clipboard?.writeText(text);
   };

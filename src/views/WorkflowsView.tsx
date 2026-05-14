@@ -1,9 +1,7 @@
-import type { useBuildLauncher } from "../hooks/useBuildLauncher";
+import type { BuildLauncher } from "../hooks/useBuildLauncher";
 import { Button, Icon, Panel } from "../components/ui";
 
-type Launcher = ReturnType<typeof useBuildLauncher>;
-
-export function WorkflowsView({ launcher }: { launcher: Launcher }) {
+export function WorkflowsView({ launcher }: { launcher: BuildLauncher }) {
   return (
     <div className="view-grid">
       <Panel

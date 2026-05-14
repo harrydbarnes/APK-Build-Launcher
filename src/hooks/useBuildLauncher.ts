@@ -555,3 +555,5 @@ export function useBuildLauncher() {
     updateSelectedPreset,
   };
 }
+
+export type BuildLauncher = ReturnType<typeof useBuildLauncher>;

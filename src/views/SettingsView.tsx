@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
-import type { useBuildLauncher } from "../hooks/useBuildLauncher";
+import type { BuildLauncher } from "../hooks/useBuildLauncher";
 import type { AppConfig, ShellMode } from "../types";
 import { Button, Field, Icon, Panel, ToolRow } from "../components/ui";
 import { api } from "../tauri";
 
-type Launcher = ReturnType<typeof useBuildLauncher>;
-
-export function SettingsView({ launcher }: { launcher: Launcher }) {
+export function SettingsView({ launcher }: { launcher: BuildLauncher }) {
   const [draft, setDraft] = useState<AppConfig>(launcher.config);
 
   useEffect(() => {

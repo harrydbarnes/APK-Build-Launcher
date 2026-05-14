@@ -1,12 +1,10 @@
 import { useEffect, useRef } from "react";
-import type { useBuildLauncher } from "../hooks/useBuildLauncher";
+import type { BuildLauncher } from "../hooks/useBuildLauncher";
 import type { LogEvent } from "../types";
 import { Button, LogLine, Panel } from "../components/ui";
-
-type Launcher = ReturnType<typeof useBuildLauncher>;
 const levels: Array<"all" | LogEvent["level"]> = ["all", "group", "info", "success", "warn", "error"];
 
-export function LogsView({ launcher }: { launcher: Launcher }) {
+export function LogsView({ launcher }: { launcher: BuildLauncher }) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {

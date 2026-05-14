@@ -1,12 +1,10 @@
-import type { useBuildLauncher } from "../hooks/useBuildLauncher";
+import type { BuildLauncher } from "../hooks/useBuildLauncher";
 import type { BuildPreset, ShellMode } from "../types";
 import { Button, Field, Icon, Panel, ReadinessBadge, ToolRow } from "../components/ui";
 
-type Launcher = ReturnType<typeof useBuildLauncher>;
-
 const secretNames = ["LOCAL_PROPERTIES_BASE64", "LOCAL_DEV_PROPERTIES_BASE64"];
 
-export function HomeView({ launcher }: { launcher: Launcher }) {
+export function HomeView({ launcher }: { launcher: BuildLauncher }) {
   const {
     branches,
     branchMessage,
