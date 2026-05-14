@@ -68,7 +68,7 @@ export function ToolRow({ label, probe }: { label: string; probe?: ToolProbe }) 
         <p>{probe?.message ?? "Checking..."}</p>
         {probe?.path && <small>{probe.path}</small>}
       </div>
-      <ReadinessBadge label={available ? "Ready" : "Missing"} ready={available} />
+      <span className={`tool-dot ${available ? "ready" : "missing"}`} aria-label={available ? "Ready" : "Missing"} title={available ? "Ready" : "Missing"} />
     </div>
   );
 }

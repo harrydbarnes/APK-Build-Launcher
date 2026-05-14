@@ -282,8 +282,7 @@ export function useBuildLauncher() {
     const javaReady = toolStatus?.java.available ?? false;
     const androidReady = toolStatus?.androidSdk.available ?? false;
     const bashReady = draft.shellMode === "native" || (toolStatus?.gitBash.available ?? false);
-    const secretsReady = savedSecretNames.includes("LOCAL_PROPERTIES_BASE64")
-      && savedSecretNames.includes("LOCAL_DEV_PROPERTIES_BASE64");
+    const secretsReady = true;
 
     return {
       repoReady,
