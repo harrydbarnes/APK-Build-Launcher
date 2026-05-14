@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useState } from "react";
 import { BuildStatePill, Icon, navItems } from "./components/ui";
 import { useBuildLauncher } from "./hooks/useBuildLauncher";
@@ -6,6 +7,45 @@ import { HomeView } from "./views/HomeView";
 import { LogsView } from "./views/LogsView";
 import { SettingsView } from "./views/SettingsView";
 import { WorkflowsView } from "./views/WorkflowsView";
+
+const appWindow = getCurrentWindow();
+
+function TitleBar() {
+  return (
+    <div className="titlebar" data-tauri-drag-region>
+      <div className="titlebar-controls">
+        <button
+          className="titlebar-btn"
+          title="Minimise"
+          onClick={() => appWindow.minimize()}
+        >
+          <svg width="10" height="1" viewBox="0 0 10 1" aria-hidden="true">
+            <line x1="0" y1="0.5" x2="10" y2="0.5" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+        <button
+          className="titlebar-btn"
+          title="Maximise"
+          onClick={() => appWindow.toggleMaximize()}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <rect x="0.6" y="0.6" width="8.8" height="8.8" rx="1" stroke="currentColor" strokeWidth="1.2" />
+          </svg>
+        </button>
+        <button
+          className="titlebar-btn titlebar-btn-close"
+          title="Close"
+          onClick={() => appWindow.close()}
+        >
+          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+            <line x1="1" y1="1" x2="9" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            <line x1="9" y1="1" x2="1" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const launcher = useBuildLauncher();
@@ -29,6 +69,8 @@ export default function App() {
 
   return (
     <main className="app-root">
+      <TitleBar />
+
       {showSplash && (
         <div className={`app-splash ${splashExiting ? "leaving" : ""}`} aria-hidden="true">
           <img className="app-splash-logo" src="/apk-build-launcher-transparent.png" alt="" />

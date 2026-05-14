@@ -81,8 +81,9 @@ html[data-theme="light"] {
 body {
   margin: 0;
   min-width: 960px;
-  background: var(--bg);
+  background: var(--sidebar);
   color: var(--text);
+  overflow: hidden;
 }
 
 button,
@@ -101,17 +102,54 @@ button:disabled {
 }
 
 .app-root {
-  min-height: 100vh;
-  background:
-    linear-gradient(135deg, rgba(48, 213, 168, 0.08), transparent 34%),
-    linear-gradient(315deg, rgba(69, 200, 241, 0.07), transparent 38%),
-    var(--bg);
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+}
+
+.titlebar {
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 4px;
+  user-select: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-items: center;
+}
+
+.titlebar-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 32px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--subtle);
+}
+
+.titlebar-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.titlebar-btn-close:hover {
+  background: var(--danger);
+  color: #fff;
 }
 
 .desktop-frame {
+  flex: 1;
+  min-height: 0;
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  min-height: 100vh;
+  padding: 0 8px 8px 0;
 }
 
 .sidebar {
@@ -119,8 +157,7 @@ button:disabled {
   flex-direction: column;
   gap: 22px;
   padding: 22px 18px;
-  background: var(--sidebar);
-  border-right: 1px solid var(--border);
+  background: transparent;
 }
 
 .brand-block {
@@ -233,6 +270,12 @@ button:disabled {
   min-width: 0;
   display: flex;
   flex-direction: column;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, rgba(48, 213, 168, 0.08), transparent 34%),
+    linear-gradient(315deg, rgba(69, 200, 241, 0.07), transparent 38%),
+    var(--bg);
 }
 
 .topbar {
@@ -242,8 +285,7 @@ button:disabled {
   gap: 20px;
   padding: 18px 24px;
   border-bottom: 1px solid var(--border);
-  background: rgba(28, 32, 38, 0.68);
-  backdrop-filter: blur(10px);
+  background: var(--sidebar);
 }
 
 .topbar h2 {
@@ -800,7 +842,7 @@ button:disabled {
   z-index: 50;
   display: grid;
   place-items: center;
-  background: var(--bg);
+  background: var(--sidebar);
   opacity: 1;
   transition: opacity 260ms ease, visibility 260ms ease;
 }
