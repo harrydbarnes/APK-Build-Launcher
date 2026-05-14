@@ -227,8 +227,10 @@ export function useBuildLauncher() {
       await api.saveConfig(normalized);
       setConfig(normalized);
       setStatus(message);
+      return true;
     } catch (error) {
-      setStatus(String(error));
+      setStatus(error instanceof Error ? error.message : "Failed to save configuration");
+      return false;
     }
   }, []);
 
