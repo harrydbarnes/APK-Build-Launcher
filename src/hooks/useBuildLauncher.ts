@@ -223,9 +223,13 @@ export function useBuildLauncher() {
 
   const saveConfig = useCallback(async (next: AppConfig, message = "Settings saved") => {
     const normalized = normalizeConfig(next);
-    setConfig(normalized);
-    await api.saveConfig(normalized);
-    setStatus(message);
+    try {
+      await api.saveConfig(normalized);
+      setConfig(normalized);
+      setStatus(message);
+    } catch (error) {
+      setStatus(String(error));
+    }
   }, []);
 
   const loadBranches = useCallback(async () => {
