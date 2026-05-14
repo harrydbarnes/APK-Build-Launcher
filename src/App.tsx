@@ -16,7 +16,7 @@ function TitleBar() {
       <div className="titlebar-controls">
         <button
           className="titlebar-btn"
-          title="Minimise"
+          title="Minimize"
           onClick={() => appWindow.minimize()}
         >
           <svg width="10" height="1" viewBox="0 0 10 1" aria-hidden="true">
@@ -25,7 +25,7 @@ function TitleBar() {
         </button>
         <button
           className="titlebar-btn"
-          title="Maximise"
+          title="Maximize"
           onClick={() => appWindow.toggleMaximize()}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
