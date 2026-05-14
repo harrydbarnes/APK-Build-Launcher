@@ -104,7 +104,21 @@ function resolveBranchHint(branches: string[], branchHint: string) {
   const matches = branches
     .filter((branch) => normalizedHint.startsWith(`${branch}/`))
     .sort((left, right) => right.length - left.length);
-  return matches.length ? matches[0] : normalizedHint;
+  return matches.length ? matches[0] : "";
+}
+
+function preferredRefName(branches: string[], currentRefName: string, branchHint: string) {
+  if (branchHint) {
+    const resolvedHint = resolveBranchHint(branches, branchHint);
+    if (resolvedHint) {
+      return resolvedHint;
+    }
+  }
+  const trimmedRefName = currentRefName.trim();
+  if (!trimmedRefName || !branches.includes(trimmedRefName)) {
+    return branches[0] ?? "";
+  }
+  return trimmedRefName;
 }
 
 function normalizeDraftRepoInput(draft: BuildDraft): BuildDraft {
@@ -326,11 +340,7 @@ export function useBuildLauncher() {
       const loaded = await api.listBranches(repoUrl);
       api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setBranches(loaded);
-      const nextRefName = branchHint
-        ? resolveBranchHint(loaded, branchHint)
-        : loaded.length && (!draft.refName.trim() || !loaded.includes(draft.refName.trim()))
-          ? loaded[0]
-          : draft.refName.trim();
+      const nextRefName = preferredRefName(loaded, draft.refName, branchHint);
       if (repoUrl !== draft.repoUrl || nextRefName !== draft.refName) {
         updateDraft({
           ...(repoUrl !== draft.repoUrl ? { repoUrl } : {}),

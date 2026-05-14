@@ -1224,7 +1224,7 @@ fn normalize_repo_url(repo_url: &str) -> String {
     }
 
     let repo_segment = parts[1];
-    let mut normalized = format!("{}://{}/{}/{}", url.scheme(), url.host_str().unwrap_or(host), parts[0], repo_segment.trim_end_matches(".git"));
+    let mut normalized = format!("{}://{}/{}/{}", url.scheme(), host, parts[0], repo_segment.trim_end_matches(".git"));
     if repo_segment.ends_with(".git") {
         normalized.push_str(".git");
     }
