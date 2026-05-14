@@ -65,7 +65,7 @@ function parseGitHubRepoInput(input: string): ParsedRepoInput {
     return { repoUrl: trimmed, branchHint: "" };
   }
 
-  if (!["github.com", "www.github.com"].includes(url.hostname.toLocaleLowerCase())) {
+  if (!["github.com", "www.github.com"].includes(url.hostname.toLowerCase())) {
     return { repoUrl: trimmed, branchHint: "" };
   }
 
@@ -103,7 +103,8 @@ function resolveBranchHint(branches: string[], branchHint: string) {
   }
   return branches
     .filter((branch) => normalizedHint.startsWith(`${branch}/`))
-    .sort((left, right) => right.length - left.length)[0] ?? normalizedHint;
+    .sort((left, right) => right.length - left.length)
+    .at(0) ?? normalizedHint;
 }
 
 function normalizeDraftRepoInput(draft: BuildDraft): BuildDraft {

@@ -417,6 +417,7 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
 }
 
 fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: &Path, context: &Context, step: &StepDoc, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    let repo_url = normalize_repo_url(&request.repo_url);
     if let Some(uses) = &step.uses {
         let lower = uses.to_ascii_lowercase();
         if lower.starts_with("actions/checkout@") {
@@ -431,7 +432,7 @@ fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: 
         }
         if lower.starts_with("actions/upload-artifact@") {
             let path = step.with.get("path").and_then(value_to_string).ok_or_else(|| "upload-artifact requires with.path".to_string())?;
-            let output = output_folder(&request.output_folder, &normalize_repo_url(&request.repo_url), &request.ref_name)?;
+            let output = output_folder(&request.output_folder, &repo_url, &request.ref_name)?;
             copy_artifacts(repo_path, &path, &output)?;
             log(app, build_id, "success", "Artifact step copied files locally");
             return Ok(());
