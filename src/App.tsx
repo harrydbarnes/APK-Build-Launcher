@@ -111,7 +111,7 @@ export default function App() {
 
         <section className="content-shell">
           <header className="topbar">
-            <h2>{navItems.find((i) => i.id === launcher.activeView)?.label ?? "Home"}</h2>
+            <h2 aria-live="polite">{navItems.find((i) => i.id === launcher.activeView)?.label ?? "Home"}</h2>
             <div className="topbar-actions">
               <BuildStatePill state={launcher.buildState} />
               <button title="Refresh tool status" onClick={launcher.refreshTools}>
