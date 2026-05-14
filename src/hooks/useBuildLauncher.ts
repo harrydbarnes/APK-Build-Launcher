@@ -218,8 +218,9 @@ export function useBuildLauncher() {
       secretsReady,
       canDetect: repoReady && !busy && !installingTools && !loadingBranches,
       canBuild: repoReady && workflowReady && jobReady && outputReady && !busy && !installingTools,
+      canCancel: buildState === "running",
     };
-  }, [busy, draft, installingTools, loadingBranches, savedSecretNames, toolStatus, workflows]);
+  }, [buildState, busy, draft, installingTools, loadingBranches, savedSecretNames, toolStatus, workflows]);
 
   const saveConfig = useCallback(async (next: AppConfig, message = "Settings saved") => {
     const normalized = normalizeConfig(next);
@@ -349,9 +350,13 @@ export function useBuildLauncher() {
   }, [draft, readiness.canBuild]);
 
   const cancelBuild = useCallback(async () => {
-    await api.cancelBuild();
-    setBuildState("cancelled");
-    setStatus("Cancellation requested");
+    try {
+      await api.cancelBuild();
+      setBuildState("cancelled");
+      setStatus("Cancellation requested");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Failed to cancel build");
+    }
   }, []);
 
   const installTools = useCallback(async () => {

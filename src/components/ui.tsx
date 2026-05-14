@@ -46,9 +46,9 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   );
 }
 
-export function Button({ children, variant = "primary", icon, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" | "ghost"; icon?: ReactNode }) {
+export function Button({ children, variant = "primary", icon, className, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "danger" | "ghost"; icon?: ReactNode }) {
   return (
-    <button className={`button ${variant}`} {...props}>
+    <button className={`button ${variant}${className ? ` ${className}` : ""}`} {...props}>
       {icon}
       <span>{children}</span>
     </button>

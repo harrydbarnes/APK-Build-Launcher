@@ -22,7 +22,7 @@ export function LogsView({ launcher }: { launcher: BuildLauncher }) {
           <Button variant="ghost" onClick={() => launcher.setAutoScrollLogs(!launcher.autoScrollLogs)}>
             {launcher.autoScrollLogs ? "Auto-scroll on" : "Auto-scroll off"}
           </Button>
-          <Button variant="danger" disabled={!launcher.busy} onClick={launcher.cancelBuild}>Cancel</Button>
+          <Button variant="danger" disabled={!launcher.readiness.canCancel} onClick={launcher.cancelBuild}>Cancel</Button>
         </div>
       )}
     >
