@@ -33,6 +33,24 @@ struct AppConfig {
     default_output_folder: String,
     shell_mode: ShellMode,
     theme: String,
+    #[serde(default)]
+    presets: Vec<BuildPreset>,
+    #[serde(default)]
+    default_preset_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BuildPreset {
+    id: String,
+    name: String,
+    repo_url: String,
+    ref_name: String,
+    workflow_path: String,
+    job_id: String,
+    output_folder: String,
+    shell_mode: ShellMode,
+    updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +67,8 @@ impl Default for AppConfig {
             default_output_folder: dirs::download_dir().unwrap_or_else(default_app_data).display().to_string(),
             shell_mode: ShellMode::Native,
             theme: "system".to_string(),
+            presets: vec![],
+            default_preset_id: None,
         }
     }
 }
