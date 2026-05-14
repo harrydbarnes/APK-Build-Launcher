@@ -216,10 +216,10 @@ export function useBuildLauncher() {
       androidReady,
       bashReady,
       secretsReady,
-      canDetect: repoReady && !busy && !loadingBranches,
-      canBuild: repoReady && workflowReady && jobReady && outputReady && !busy,
+      canDetect: repoReady && !busy && !installingTools && !loadingBranches,
+      canBuild: repoReady && workflowReady && jobReady && outputReady && !busy && !installingTools,
     };
-  }, [busy, draft, loadingBranches, savedSecretNames, toolStatus, workflows]);
+  }, [busy, draft, installingTools, loadingBranches, savedSecretNames, toolStatus, workflows]);
 
   const saveConfig = useCallback(async (next: AppConfig, message = "Settings saved") => {
     const normalized = normalizeConfig(next);
