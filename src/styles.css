@@ -158,6 +158,7 @@ button:disabled {
   gap: 22px;
   padding: 22px 18px;
   background: transparent;
+  overflow: hidden;
 }
 
 .brand-block {
@@ -217,6 +218,9 @@ button:disabled {
 .side-nav {
   display: grid;
   gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .side-nav button {
