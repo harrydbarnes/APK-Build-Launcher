@@ -47,6 +47,89 @@ const emptyDraft: BuildDraft = {
   shellMode: "native",
 };
 
+type ParsedRepoInput = {
+  repoUrl: string;
+  branchHint: string;
+};
+
+function parseGitHubRepoInput(input: string): ParsedRepoInput {
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return { repoUrl: "", branchHint: "" };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return { repoUrl: trimmed, branchHint: "" };
+  }
+
+  if (!["github.com", "www.github.com"].includes(url.hostname.toLowerCase())) {
+    return { repoUrl: trimmed, branchHint: "" };
+  }
+
+  const segments = url.pathname.split("/").filter(Boolean);
+  if (segments.length < 2) {
+    return { repoUrl: trimmed.replace(/\/+$/, ""), branchHint: "" };
+  }
+
+  const owner = segments[0];
+  const repoSegment = segments[1];
+  const repo = repoSegment.replace(/\.git$/, "");
+  const repoUrl = `${url.protocol}//${url.host}/${owner}/${repo}${repoSegment.endsWith(".git") ? ".git" : ""}`;
+  const branchHint = segments[2] === "tree" || segments[2] === "blob"
+    ? decodeRepoSegment(segments.slice(3).join("/"))
+    : "";
+
+  return { repoUrl, branchHint };
+}
+
+function decodeRepoSegment(segment: string) {
+  try {
+    return decodeURIComponent(segment.trim());
+  } catch {
+    return segment.trim();
+  }
+}
+
+function resolveBranchHint(branches: string[], branchHint: string) {
+  const normalizedHint = branchHint.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
+  if (!normalizedHint) {
+    return "";
+  }
+  if (branches.includes(normalizedHint)) {
+    return normalizedHint;
+  }
+  const matches = branches
+    .filter((branch) => normalizedHint.startsWith(`${branch}/`))
+    .sort((left, right) => right.length - left.length);
+  return matches.length ? matches[0] : "";
+}
+
+function preferredRefName(branches: string[], currentRefName: string, branchHint: string) {
+  if (branchHint) {
+    const resolvedHint = resolveBranchHint(branches, branchHint);
+    if (resolvedHint) {
+      return resolvedHint;
+    }
+  }
+  const trimmedRefName = currentRefName.trim();
+  if (!trimmedRefName || !branches.includes(trimmedRefName)) {
+    return branches[0] ?? "";
+  }
+  return trimmedRefName;
+}
+
+function normalizeDraftRepoInput(draft: BuildDraft): BuildDraft {
+  const parsed = parseGitHubRepoInput(draft.repoUrl);
+  return {
+    ...draft,
+    repoUrl: parsed.repoUrl,
+    refName: parsed.branchHint || draft.refName,
+  };
+}
+
 function normalizeConfig(config: AppConfig): AppConfig {
   return {
     ...emptyConfig,
@@ -122,11 +205,11 @@ export function useBuildLauncher() {
         const defaultPreset = normalized.presets.find((preset) => preset.id === normalized.defaultPresetId);
         setConfig(normalized);
         setSelectedPresetId(defaultPreset?.id ?? null);
-        const initialDraft = defaultPreset ? draftFromPreset(defaultPreset) : {
+        const initialDraft = normalizeDraftRepoInput(defaultPreset ? draftFromPreset(defaultPreset) : {
           ...emptyDraft,
           outputFolder: normalized.defaultOutputFolder,
           shellMode: normalized.shellMode,
-        };
+        });
         previousRepoUrl.current = initialDraft.repoUrl;
         setDraft(initialDraft);
       })
@@ -168,6 +251,14 @@ export function useBuildLauncher() {
   const updateDraft = useCallback((patch: Partial<BuildDraft>) => {
     setDraft((current) => ({ ...current, ...patch }));
   }, []);
+
+  const setRepoUrl = useCallback((repoInput: string) => {
+    const parsed = parseGitHubRepoInput(repoInput);
+    updateDraft({
+      repoUrl: parsed.repoUrl,
+      ...(parsed.branchHint ? { refName: parsed.branchHint } : {}),
+    });
+  }, [updateDraft]);
 
   const selectedWorkflow = useMemo(
     () => workflows.find((workflow) => workflow.filePath === draft.workflowPath),
@@ -237,7 +328,7 @@ export function useBuildLauncher() {
   }, []);
 
   const loadBranches = useCallback(async () => {
-    const repoUrl = draft.repoUrl.trim();
+    const { repoUrl, branchHint } = parseGitHubRepoInput(draft.repoUrl);
     if (!repoUrl) {
       setBranchMessage("Enter a GitHub repo URL first.");
       return;
@@ -249,8 +340,12 @@ export function useBuildLauncher() {
       const loaded = await api.listBranches(repoUrl);
       api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setBranches(loaded);
-      if (loaded.length && (!draft.refName.trim() || !loaded.includes(draft.refName.trim()))) {
-        updateDraft({ refName: loaded[0] });
+      const nextRefName = preferredRefName(loaded, draft.refName, branchHint);
+      if (repoUrl !== draft.repoUrl || nextRefName !== draft.refName) {
+        updateDraft({
+          ...(repoUrl !== draft.repoUrl ? { repoUrl } : {}),
+          ...(nextRefName !== draft.refName ? { refName: nextRefName } : {}),
+        });
       }
       setBranchMessage(loaded.length ? `${loaded.length} branch${loaded.length === 1 ? "" : "es"} loaded.` : "No branches found.");
     } catch (error) {
@@ -493,7 +588,7 @@ export function useBuildLauncher() {
 
   const selectPreset = useCallback((preset: BuildPreset) => {
     setSelectedPresetId(preset.id);
-    const newDraft = draftFromPreset(preset);
+    const newDraft = normalizeDraftRepoInput(draftFromPreset(preset));
     previousRepoUrl.current = newDraft.repoUrl;
     setDraft(newDraft);
     setWorkflows([]);
@@ -563,6 +658,7 @@ export function useBuildLauncher() {
     setLogSearch,
     setSecretDraft,
     startBuild,
+    setRepoUrl,
     updateDraft,
     updateSelectedPreset,
   };

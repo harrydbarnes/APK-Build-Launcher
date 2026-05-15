@@ -1,6 +1,7 @@
 use base64::Engine;
 use chrono::Local;
 use glob::glob;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use sha2::{Digest, Sha256};
@@ -211,6 +212,7 @@ fn save_config(config: AppConfig) -> Result<(), String> {
 #[tauri::command]
 fn list_branches(app: AppHandle, repo_url: String) -> Result<Vec<String>, String> {
     tools::ensure_git(|level, message| log(&app, "tools", level, message))?;
+    let repo_url = normalize_repo_url(&repo_url);
     let output = run_output(git_spec(["ls-remote", "--symref", repo_url.as_str(), "HEAD", "refs/heads/*"]), None)?;
     Ok(parse_remote_branches(&output))
 }
@@ -222,6 +224,7 @@ fn prepare_repo(app: AppHandle, repo_url: String, ref_name: String) -> Result<St
 }
 
 fn prepare_repo_inner(repo_url: String, ref_name: String, update_remote: bool) -> Result<String, String> {
+    let repo_url = normalize_repo_url(&repo_url);
     let repo_path = repo_path_for(&repo_url)?;
     if repo_path.exists() {
         if update_remote {
@@ -280,7 +283,7 @@ fn detect_workflows(repo_path: String) -> Result<Vec<WorkflowSummary>, String> {
 
 #[tauri::command]
 fn get_secrets(repo_url: String) -> Result<SecretSummary, String> {
-    let repo_key = stable_id(&repo_url);
+    let repo_key = repo_stable_id(&repo_url);
     let secrets = read_secret_store(&repo_key)?;
     Ok(SecretSummary {
         repo_key,
@@ -290,7 +293,7 @@ fn get_secrets(repo_url: String) -> Result<SecretSummary, String> {
 
 #[tauri::command]
 fn save_secrets(repo_url: String, secrets: HashMap<String, String>) -> Result<(), String> {
-    let repo_key = stable_id(&repo_url);
+    let repo_key = repo_stable_id(&repo_url);
     let mut current = read_secret_store(&repo_key)?;
     for (key, value) in secrets {
         if !value.trim().is_empty() {
@@ -351,7 +354,8 @@ fn cancel_build(state: State<BuildState>) -> Result<(), String> {
 fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, request: BuildRequest) -> Result<BuildResult, String> {
     log(&app, &build_id, "group", "Preparing repository");
     tools::ensure_git(|level, message| log(&app, &build_id, level, message))?;
-    let repo_path = PathBuf::from(prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone(), false)?);
+    let repo_url = normalize_repo_url(&request.repo_url);
+    let repo_path = PathBuf::from(prepare_repo_inner(repo_url.clone(), request.ref_name.clone(), false)?);
     log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
 
     let doc = load_workflow(&request.workflow_path)?;
@@ -367,7 +371,7 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
     )?;
     let java = installed.java;
     let android_sdk = installed.android_sdk;
-    let secrets = unprotect_secret_store(&stable_id(&request.repo_url))?;
+    let secrets = unprotect_secret_store(&repo_stable_id(&repo_url))?;
 
     let context = Context {
         workspace: repo_path.clone(),
@@ -390,12 +394,12 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
         log(&app, &build_id, "success", &format!("Finished {}", step_name));
     }
 
-    let final_output = output_folder(&request.output_folder, &request.repo_url, &request.ref_name)?;
+    let final_output = output_folder(&request.output_folder, &repo_url, &request.ref_name)?;
     let copied = copy_apks(&repo_path, &final_output)?;
     if copied.is_empty() {
         return Err("Build finished, but no APK files were found to copy".to_string());
     }
-    sync_latest(&final_output, &request.output_folder, &request.repo_url, &copied)?;
+    sync_latest(&final_output, &request.output_folder, &repo_url, &copied)?;
     log(&app, &build_id, "success", &format!("Copied {} APK file(s) to {}", copied.len(), final_output.display()));
     Ok(BuildResult {
         build_id,
@@ -405,6 +409,7 @@ fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, re
 }
 
 fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: &Path, context: &Context, step: &StepDoc, cancel: Arc<AtomicBool>) -> Result<(), String> {
+    let repo_url = normalize_repo_url(&request.repo_url);
     if let Some(uses) = &step.uses {
         let lower = uses.to_ascii_lowercase();
         if lower.starts_with("actions/checkout@") {
@@ -419,7 +424,7 @@ fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: 
         }
         if lower.starts_with("actions/upload-artifact@") {
             let path = step.with.get("path").and_then(value_to_string).ok_or_else(|| "upload-artifact requires with.path".to_string())?;
-            let output = output_folder(&request.output_folder, &request.repo_url, &request.ref_name)?;
+            let output = output_folder(&request.output_folder, &repo_url, &request.ref_name)?;
             copy_artifacts(repo_path, &path, &output)?;
             log(app, build_id, "success", "Artifact step copied files locally");
             return Ok(());
@@ -1188,11 +1193,42 @@ fn java_major_version(version_text: &str) -> Option<String> {
 }
 
 fn repo_path_for(repo_url: &str) -> Result<PathBuf, String> {
-    Ok(configured_repo_root().join(format!("{}-{}", sanitize(&repo_name(repo_url)), &stable_id(repo_url)[..8])))
+    Ok(configured_repo_root().join(format!("{}-{}", sanitize(&repo_name(repo_url)), &repo_stable_id(repo_url)[..8])))
 }
 
 fn repo_name(repo_url: &str) -> String {
-    repo_url.trim_end_matches(".git").rsplit(['/', ':']).next().unwrap_or("repo").to_string()
+    normalize_repo_url(repo_url).trim_end_matches(".git").rsplit(['/', ':']).next().unwrap_or("repo").to_string()
+}
+
+fn repo_stable_id(repo_url: &str) -> String {
+    stable_id(&normalize_repo_url(repo_url))
+}
+
+fn normalize_repo_url(repo_url: &str) -> String {
+    let trimmed = repo_url.trim();
+    let Ok(url) = Url::parse(trimmed) else {
+        return trimmed.to_string();
+    };
+    let Some(host) = url.host_str() else {
+        return trimmed.to_string();
+    };
+    if !matches!(host.to_ascii_lowercase().as_str(), "github.com" | "www.github.com") {
+        return trimmed.to_string();
+    }
+    let Some(segments) = url.path_segments() else {
+        return trimmed.trim_end_matches('/').to_string();
+    };
+    let parts = segments.filter(|segment| !segment.is_empty()).collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return trimmed.trim_end_matches('/').to_string();
+    }
+
+    let repo_segment = parts[1];
+    let mut normalized = format!("{}://{}/{}/{}", url.scheme(), host, parts[0], repo_segment.trim_end_matches(".git"));
+    if repo_segment.ends_with(".git") {
+        normalized.push_str(".git");
+    }
+    normalized
 }
 
 fn sanitize(input: &str) -> String {
