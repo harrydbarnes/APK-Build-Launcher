@@ -312,7 +312,7 @@ export function useBuildLauncher() {
       canBuild: repoReady && workflowReady && jobReady && outputReady && !busy && !installingTools,
       canCancel: buildState === "running",
     };
-  }, [buildState, busy, draft, installingTools, loadingBranches, savedSecretNames, toolStatus, workflows]);
+  }, [buildState, busy, draft, installingTools, loadingBranches, toolStatus, workflows]);
 
   const saveConfig = useCallback(async (next: AppConfig, message = "Settings saved") => {
     const normalized = normalizeConfig(next);

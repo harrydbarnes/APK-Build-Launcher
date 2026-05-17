@@ -29,8 +29,6 @@ export type WorkflowSummary = {
   jobs: JobSummary[];
 };
 
-export type BranchSummary = string;
-
 export type JobSummary = {
   id: string;
   name: string;
