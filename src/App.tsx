@@ -100,7 +100,7 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="sidebar-status">
+          <div className={`sidebar-status state-${launcher.buildState}`}>
             <div className="status-title">
               <span>Status</span>
               <BuildStatePill state={launcher.buildState} />
