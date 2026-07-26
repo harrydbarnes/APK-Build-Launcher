@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:core": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/bootstrap-non-admin.ps1 -Test",
+    "build:non-admin": "powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/bootstrap-non-admin.ps1 -Build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

@@ -1,5 +1,7 @@
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use crate::planning::ToolRequirement;
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
@@ -27,6 +29,9 @@ pub struct ToolStatus {
     pub java: ToolProbe,
     pub android_sdk: ToolProbe,
     pub git_bash: ToolProbe,
+    pub node: ToolProbe,
+    pub rust: ToolProbe,
+    pub dotnet: ToolProbe,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +53,11 @@ pub struct BuildTools {
     pub android_sdk: PathBuf,
 }
 
+#[derive(Clone)]
+pub struct PlanTools {
+    pub env: HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     assets: Vec<GithubAsset>,
@@ -57,6 +67,14 @@ struct GithubRelease {
 struct GithubAsset {
     name: String,
     browser_download_url: String,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NodeRelease {
+    version: String,
+    lts: serde_json::Value,
 }
 
 pub fn tool_status() -> ToolStatus {
@@ -111,6 +129,24 @@ pub fn tool_status() -> ToolStatus {
             message: "Git Bash is available.".to_string(),
         },
     );
+    let node = probe_command(
+        node_program(),
+        &["--version"],
+        "Node.js will be downloaded when required.",
+        "Node.js is available.",
+    );
+    let rust = probe_command(
+        cargo_program(),
+        &["--version"],
+        "Rust and portable GCC will be downloaded when required.",
+        "Rust is available.",
+    );
+    let dotnet = probe_command(
+        dotnet_program(),
+        &["--version"],
+        ".NET SDK will be downloaded when required.",
+        ".NET SDK is available.",
+    );
 
     ToolStatus {
         tools_root: tools_root.display().to_string(),
@@ -118,6 +154,9 @@ pub fn tool_status() -> ToolStatus {
         java,
         android_sdk,
         git_bash,
+        node,
+        rust,
+        dotnet,
     }
 }
 
@@ -208,6 +247,308 @@ where
     }
     let android_sdk = ensure_android_sdk(compile_sdks, &java, |level, message| log(level, message))?;
     Ok(BuildTools { java, android_sdk })
+}
+
+pub fn ensure_plan_tools<L>(
+    requirements: &[ToolRequirement],
+    compile_sdks: &[u32],
+    mut log: L,
+) -> Result<PlanTools, String>
+where
+    L: FnMut(&str, &str),
+{
+    let mut env = HashMap::new();
+    let mut path_prefixes = vec![];
+    for requirement in requirements {
+        match requirement.id.as_str() {
+            "git" => {
+                let git = ensure_git(|level, message| log(level, message))?;
+                if let Some(parent) = git.parent() {
+                    path_prefixes.push(parent.to_path_buf());
+                }
+            }
+            "java" => {
+                let version = requirement.version.as_deref().unwrap_or("17");
+                let java = ensure_java_version(version, |level, message| log(level, message))?;
+                if let Some(home) = java.home {
+                    env.insert("JAVA_HOME".to_string(), home.display().to_string());
+                    path_prefixes.push(home.join("bin"));
+                }
+            }
+            "android" => {
+                let java = ensure_java_version("17", |level, message| log(level, message))?;
+                let sdk = ensure_android_sdk(compile_sdks, &java, |level, message| log(level, message))?;
+                env.insert("ANDROID_HOME".to_string(), sdk.display().to_string());
+                env.insert("ANDROID_SDK_ROOT".to_string(), sdk.display().to_string());
+            }
+            "node" => {
+                let node = ensure_node(requirement.version.as_deref(), |level, message| log(level, message))?;
+                if let Some(parent) = node.parent() {
+                    path_prefixes.push(parent.to_path_buf());
+                }
+            }
+            "rust" => {
+                let rust = ensure_rust_gnu(|level, message| log(level, message))?;
+                path_prefixes.push(rust.cargo_bin.clone());
+                path_prefixes.push(rust.linker_bin.clone());
+                env.insert("CARGO_HOME".to_string(), rust.cargo_home.display().to_string());
+                env.insert("RUSTUP_HOME".to_string(), rust.rustup_home.display().to_string());
+                env.insert("RUSTUP_TOOLCHAIN".to_string(), "stable-x86_64-pc-windows-gnu".to_string());
+            }
+            "dotnet" => {
+                let dotnet = ensure_dotnet(requirement.version.as_deref(), |level, message| log(level, message))?;
+                if let Some(parent) = dotnet.parent() {
+                    path_prefixes.push(parent.to_path_buf());
+                    env.insert("DOTNET_ROOT".to_string(), parent.display().to_string());
+                }
+            }
+            other => return Err(format!("Unknown local tool requirement '{}'.", other)),
+        }
+    }
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut path = path_prefixes
+        .iter()
+        .map(|item| item.display().to_string())
+        .collect::<Vec<_>>()
+        .join(separator);
+    if !path.is_empty() && !existing.is_empty() {
+        path.push_str(separator);
+    }
+    path.push_str(&existing);
+    env.insert("PATH".to_string(), path);
+    Ok(PlanTools { env })
+}
+
+#[derive(Clone)]
+struct RustInstall {
+    cargo_home: PathBuf,
+    rustup_home: PathBuf,
+    cargo_bin: PathBuf,
+    linker_bin: PathBuf,
+}
+
+fn ensure_node<L>(expected: Option<&str>, mut log: L) -> Result<PathBuf, String>
+where
+    L: FnMut(&str, &str),
+{
+    if let Some(node) = node_program().filter(|path| run_output(path, &["--version"], None).is_ok()) {
+        log("success", &format!("Node.js is available at {}", node.display()));
+        return Ok(node);
+    }
+    let destination = tools_root().join("Node");
+    let installed = destination.join("node.exe");
+    if installed.exists() {
+        return Ok(installed);
+    }
+    log("group", "Downloading portable Node.js");
+    let releases: Vec<NodeRelease> = http_client()?
+        .get("https://nodejs.org/dist/index.json")
+        .header("User-Agent", "APK-Build-Launcher")
+        .send()
+        .map_err(display_err)?
+        .error_for_status()
+        .map_err(display_err)?
+        .json()
+        .map_err(display_err)?;
+    let expected_major = expected.and_then(first_number);
+    let release = releases
+        .iter()
+        .find(|release| {
+            !release.lts.is_boolean() || release.lts.as_bool() != Some(false)
+        })
+        .and_then(|first_lts| {
+            releases.iter().find(|release| {
+                let lts = !release.lts.is_boolean() || release.lts.as_bool() != Some(false);
+                let major_matches = expected_major
+                    .as_deref()
+                    .map(|major| release.version.trim_start_matches('v').split('.').next() == Some(major))
+                    .unwrap_or(true);
+                lts && major_matches
+            }).or(Some(first_lts))
+        })
+        .ok_or_else(|| "Could not resolve a Node.js LTS release.".to_string())?;
+    let url = format!(
+        "https://nodejs.org/dist/{0}/node-{0}-win-x64.zip",
+        release.version
+    );
+    let archive = download_bytes(&url, &mut log)?;
+    let temp = tools_root().join("_node-extract");
+    ensure_clean_dir(&temp)?;
+    extract_zip_bytes(&archive, &temp)?;
+    let source = single_child_dir(&temp).unwrap_or(temp.clone());
+    ensure_clean_dir(&destination)?;
+    copy_dir_all(&source, &destination).map_err(display_err)?;
+    let _ = fs::remove_dir_all(&temp);
+    if installed.exists() {
+        log("success", &format!("Portable Node.js installed at {}", installed.display()));
+        Ok(installed)
+    } else {
+        Err("Node.js was downloaded, but node.exe was not found.".to_string())
+    }
+}
+
+fn ensure_rust_gnu<L>(mut log: L) -> Result<RustInstall, String>
+where
+    L: FnMut(&str, &str),
+{
+    let root = tools_root().join("Rust");
+    let cargo_home = root.join("cargo");
+    let rustup_home = root.join("rustup");
+    let cargo_bin = cargo_home.join("bin");
+    let cargo = cargo_bin.join("cargo.exe");
+    let rustup = cargo_bin.join("rustup.exe");
+    let linker_bin = ensure_portable_gcc(|level, message| log(level, message))?;
+
+    if !cargo.exists() || !rustup.exists() {
+        log("group", "Downloading the per-user Rust installer");
+        ensure_dir(&root)?;
+        let installer = root.join("rustup-init.exe");
+        let bytes = download_bytes(
+            "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe",
+            &mut log,
+        )?;
+        fs::write(&installer, bytes).map_err(display_err)?;
+        let status = Command::new(&installer)
+            .args([
+                "-y",
+                "--no-modify-path",
+                "--profile",
+                "minimal",
+                "--default-host",
+                "x86_64-pc-windows-gnu",
+                "--default-toolchain",
+                "stable",
+            ])
+            .env("CARGO_HOME", &cargo_home)
+            .env("RUSTUP_HOME", &rustup_home)
+            .status()
+            .map_err(display_err)?;
+        if !status.success() {
+            return Err(format!("The non-admin Rust installer failed with status {}.", status));
+        }
+    }
+    let rustc = rustup_home
+        .join("toolchains")
+        .join("stable-x86_64-pc-windows-gnu")
+        .join("bin")
+        .join("rustc.exe");
+    if !rustc.exists() {
+        let status = Command::new(&rustup)
+            .args(["toolchain", "install", "stable-x86_64-pc-windows-gnu", "--profile", "minimal"])
+            .env("CARGO_HOME", &cargo_home)
+            .env("RUSTUP_HOME", &rustup_home)
+            .status()
+            .map_err(display_err)?;
+        if !status.success() {
+            return Err(format!("Rust GNU toolchain installation failed with status {}.", status));
+        }
+    }
+    log("success", &format!("Rust GNU toolchain is available at {}", cargo.display()));
+    Ok(RustInstall { cargo_home, rustup_home, cargo_bin, linker_bin })
+}
+
+fn ensure_portable_gcc<L>(mut log: L) -> Result<PathBuf, String>
+where
+    L: FnMut(&str, &str),
+{
+    let destination = tools_root().join("w64devkit");
+    if let Some(bin) = find_child_with(&destination, "gcc.exe").and_then(|gcc| gcc.parent().map(Path::to_path_buf)) {
+        ensure_libgcc_eh_alias(&bin)?;
+        return Ok(bin);
+    }
+    log("group", "Downloading portable GCC for no-admin Windows linking");
+    let release: GithubRelease = http_client()?
+        .get("https://api.github.com/repos/skeeto/w64devkit/releases/latest")
+        .header("User-Agent", "APK-Build-Launcher")
+        .send()
+        .map_err(display_err)?
+        .error_for_status()
+        .map_err(display_err)?
+        .json()
+        .map_err(display_err)?;
+    let asset = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.starts_with("w64devkit-x64-") && asset.name.ends_with(".7z.exe"))
+        .ok_or_else(|| "Could not find the portable x64 w64devkit archive.".to_string())?;
+    let bytes = download_bytes(&asset.browser_download_url, &mut log)?;
+    verify_github_digest(&bytes, asset)?;
+    ensure_clean_dir(&destination)?;
+    let archive = tools_root().join("w64devkit-installer.exe");
+    fs::write(&archive, bytes).map_err(display_err)?;
+    let output_arg = format!("-o{}", destination.display());
+    let status = Command::new(&archive)
+        .args(["-y", output_arg.as_str()])
+        .status()
+        .map_err(display_err)?;
+    let _ = fs::remove_file(&archive);
+    if !status.success() {
+        return Err(format!("Portable GCC extraction failed with status {}.", status));
+    }
+    let bin = find_child_with(&destination, "gcc.exe")
+        .and_then(|gcc| gcc.parent().map(Path::to_path_buf))
+        .ok_or_else(|| "Portable GCC was extracted, but gcc.exe was not found.".to_string())?;
+    ensure_libgcc_eh_alias(&bin)?;
+    log("success", &format!("Portable GCC is available at {}", bin.display()));
+    Ok(bin)
+}
+
+fn ensure_libgcc_eh_alias(bin: &Path) -> Result<(), String> {
+    let root = bin.parent().unwrap_or(bin);
+    if let Some(libgcc) = find_child_with(root, "libgcc.a") {
+        let alias = libgcc.with_file_name("libgcc_eh.a");
+        if !alias.exists() {
+            fs::copy(libgcc, alias).map_err(display_err)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_dotnet<L>(expected: Option<&str>, mut log: L) -> Result<PathBuf, String>
+where
+    L: FnMut(&str, &str),
+{
+    if let Some(dotnet) = dotnet_program().filter(|path| run_output(path, &["--version"], None).is_ok()) {
+        log("success", &format!(".NET SDK is available at {}", dotnet.display()));
+        return Ok(dotnet);
+    }
+    let destination = tools_root().join("dotnet");
+    let installed = destination.join("dotnet.exe");
+    if installed.exists() {
+        return Ok(installed);
+    }
+    log("group", "Downloading the official non-admin .NET installer");
+    ensure_dir(&destination)?;
+    let script = destination.join("dotnet-install.ps1");
+    let bytes = download_bytes("https://dot.net/v1/dotnet-install.ps1", &mut log)?;
+    fs::write(&script, bytes).map_err(display_err)?;
+    let channel = expected
+        .and_then(first_number)
+        .map(|major| format!("{}.0", major))
+        .unwrap_or_else(|| "8.0".to_string());
+    let status = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            script.to_string_lossy().as_ref(),
+            "-Channel",
+            channel.as_str(),
+            "-InstallDir",
+            destination.to_string_lossy().as_ref(),
+            "-NoPath",
+        ])
+        .status()
+        .map_err(display_err)?;
+    if status.success() && installed.exists() {
+        log("success", &format!(".NET SDK installed at {}", installed.display()));
+        Ok(installed)
+    } else {
+        Err(format!(".NET SDK installation failed with status {}.", status))
+    }
 }
 
 pub fn ensure_git_bash<L>(mut log: L) -> Result<PathBuf, String>
@@ -448,10 +789,38 @@ where
         .map_err(display_err)?
         .error_for_status()
         .map_err(display_err)?;
+    let total = response.content_length();
     let mut bytes = vec![];
-    response.read_to_end(&mut bytes).map_err(display_err)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut next_progress = 10_u64;
+    loop {
+        let read = response.read(&mut buffer).map_err(display_err)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if let Some(total) = total.filter(|total| *total > 0) {
+            let progress = (bytes.len() as u64 * 100 / total).min(100);
+            if progress >= next_progress {
+                log("info", &format!("Download {}% complete", progress));
+                next_progress = ((progress / 10) + 1) * 10;
+            }
+        }
+    }
     log("success", &format!("Downloaded {:.1} MB", bytes.len() as f64 / 1024.0 / 1024.0));
     Ok(bytes)
+}
+
+fn verify_github_digest(bytes: &[u8], asset: &GithubAsset) -> Result<(), String> {
+    let Some(expected) = asset.digest.as_deref().and_then(|value| value.strip_prefix("sha256:")) else {
+        return Ok(());
+    };
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(expected) {
+        Ok(())
+    } else {
+        Err(format!("Checksum verification failed for {}.", asset.name))
+    }
 }
 
 fn http_client() -> Result<Client, String> {
@@ -658,6 +1027,81 @@ fn run_output(program: &Path, args: &[&str], envs: Option<&[(&str, &Path)]>) -> 
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
     }
+}
+
+fn probe_command(
+    program: Option<PathBuf>,
+    args: &[&str],
+    missing_message: &str,
+    ready_message: &str,
+) -> ToolProbe {
+    program
+        .filter(|path| run_output(path, args, None).is_ok())
+        .map_or_else(
+            || ToolProbe {
+                available: false,
+                path: None,
+                message: missing_message.to_string(),
+            },
+            |path| ToolProbe {
+                available: true,
+                path: Some(path.display().to_string()),
+                message: ready_message.to_string(),
+            },
+        )
+}
+
+fn node_program() -> Option<PathBuf> {
+    command_candidate("node.exe", &tools_root().join("Node").join("node.exe"))
+}
+
+fn cargo_program() -> Option<PathBuf> {
+    command_candidate(
+        "cargo.exe",
+        &tools_root().join("Rust").join("cargo").join("bin").join("cargo.exe"),
+    )
+}
+
+fn dotnet_program() -> Option<PathBuf> {
+    command_candidate("dotnet.exe", &tools_root().join("dotnet").join("dotnet.exe"))
+}
+
+fn command_candidate(command: &str, local: &Path) -> Option<PathBuf> {
+    if local.exists() {
+        return Some(local.to_path_buf());
+    }
+    let command_path = PathBuf::from(command);
+    run_output(&command_path, &["--version"], None)
+        .ok()
+        .map(|_| command_path)
+}
+
+fn first_number(value: &str) -> Option<String> {
+    let digits = value
+        .chars()
+        .skip_while(|character| !character.is_ascii_digit())
+        .take_while(|character| character.is_ascii_digit())
+        .collect::<String>();
+    (!digits.is_empty()).then_some(digits)
+}
+
+fn find_child_with(root: &Path, file_name: &str) -> Option<PathBuf> {
+    if !root.exists() {
+        return None;
+    }
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|name| name.to_str()).map(|name| name.eq_ignore_ascii_case(file_name)).unwrap_or(false) {
+            return Some(path);
+        }
+        if path.is_dir() {
+            if let Some(found) = find_child_with(&path, file_name) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn cached_git() -> Option<PathBuf> {

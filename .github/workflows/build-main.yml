@@ -1,9 +1,10 @@
 name: Build APK Build Launcher
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
 
 jobs:
   build-windows:
@@ -22,8 +23,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install frontend dependencies
-        run: npm install
+      - name: Install locked frontend dependencies
+        run: npm ci
 
       - name: Build Tauri app
         run: npm run tauri build

@@ -3,12 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../tauri";
 import type {
   AppConfig,
+  BuildManifest,
+  BuildPlan,
   BuildPreset,
   BuildRequest,
   BuildResult,
+  BuildTarget,
   JobSummary,
   LogEvent,
   ShellMode,
+  SourceMode,
   ToolStatus,
   WorkflowSummary,
 } from "../types";
@@ -19,12 +23,15 @@ export type View = "home" | "workflows" | "logs" | "artifacts" | "settings";
 export type BuildStateLabel = "idle" | "running" | "success" | "failed" | "cancelled";
 
 export type BuildDraft = {
+  sourceMode: SourceMode;
   repoUrl: string;
+  localPath: string;
   refName: string;
   outputFolder: string;
   workflowPath: string;
   jobId: string;
   shellMode: ShellMode;
+  target: BuildTarget;
 };
 
 export type LogLevelFilter = "all" | LogEvent["level"];
@@ -39,31 +46,42 @@ const emptyConfig: AppConfig = {
 };
 
 const emptyDraft: BuildDraft = {
+  sourceMode: "remote",
   repoUrl: "",
+  localPath: "",
   refName: "dev",
   outputFolder: "",
   workflowPath: "",
   jobId: "",
   shellMode: "native",
+  target: "auto",
 };
 
 function normalizeConfig(config: AppConfig): AppConfig {
   return {
     ...emptyConfig,
     ...config,
-    presets: config.presets ?? [],
+    presets: (config.presets ?? []).map((preset) => ({
+      ...preset,
+      sourceMode: preset.sourceMode ?? "remote",
+      localPath: preset.localPath ?? "",
+      target: preset.target ?? "auto",
+    })),
     defaultPresetId: config.defaultPresetId ?? null,
   };
 }
 
 function draftFromPreset(preset: BuildPreset): BuildDraft {
   return {
+    sourceMode: preset.sourceMode ?? "remote",
     repoUrl: preset.repoUrl,
+    localPath: preset.localPath ?? "",
     refName: preset.refName,
     outputFolder: preset.outputFolder,
     workflowPath: preset.workflowPath,
     jobId: preset.jobId,
     shellMode: preset.shellMode,
+    target: preset.target ?? "auto",
   };
 }
 
@@ -76,8 +94,28 @@ function nowStamp() {
 }
 
 function presetName(draft: BuildDraft) {
-  const repo = draft.repoUrl.trim().replace(/\.git$/, "").split(/[/:]/).filter(Boolean).pop();
-  return `${repo || "APK build"} / ${draft.refName.trim() || "ref"}`;
+  const source = draft.sourceMode === "local" ? draft.localPath : draft.repoUrl;
+  const repo = source.trim().replace(/[\\/]+$/, "").replace(/\.git$/, "").split(/[\\/:]/).filter(Boolean).pop();
+  return `${repo || "Local build"} / ${draft.target === "auto" ? "auto" : draft.target}`;
+}
+
+function sourceName(draft: BuildDraft) {
+  const source = draft.sourceMode === "local" ? draft.localPath : draft.repoUrl;
+  return source.trim().replace(/[\\/]+$/, "").replace(/\.git$/, "").split(/[\\/:]/).filter(Boolean).pop() || "project";
+}
+
+function requestFromDraft(draft: BuildDraft): BuildRequest {
+  return {
+    sourceMode: draft.sourceMode,
+    repoUrl: draft.repoUrl.trim(),
+    localPath: draft.localPath.trim(),
+    refName: draft.sourceMode === "local" ? (draft.refName.trim() || "local") : draft.refName.trim(),
+    outputFolder: draft.outputFolder,
+    workflowPath: draft.workflowPath,
+    jobId: draft.jobId,
+    shellMode: draft.shellMode,
+    target: draft.target,
+  };
 }
 
 function hasWorkflow(workflows: WorkflowSummary[], workflowPath: string) {
@@ -105,6 +143,9 @@ export function useBuildLauncher() {
   const [status, setStatus] = useState("Ready");
   const [buildState, setBuildState] = useState<BuildStateLabel>("idle");
   const [result, setResult] = useState<BuildResult | null>(null);
+  const [plan, setPlan] = useState<BuildPlan | null>(null);
+  const [history, setHistory] = useState<BuildManifest[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [installingTools, setInstallingTools] = useState(false);
   const [loadingBranches, setLoadingBranches] = useState(false);
@@ -113,7 +154,7 @@ export function useBuildLauncher() {
   const [logLevel, setLogLevel] = useState<LogLevelFilter>("all");
   const [autoScrollLogs, setAutoScrollLogs] = useState(true);
   const [selectedPresetId, setSelectedPresetId] = useState<string | null>(null);
-  const previousRepoUrl = useRef(emptyDraft.repoUrl);
+  const previousSource = useRef("");
 
   useEffect(() => {
     api.getConfig()
@@ -139,20 +180,27 @@ export function useBuildLauncher() {
 
   useEffect(() => {
     if (!appReady) {
-      previousRepoUrl.current = draft.repoUrl;
+      previousSource.current = `${draft.sourceMode}:${draft.sourceMode === "local" ? draft.localPath : draft.repoUrl}`;
       return;
     }
-    if (previousRepoUrl.current === draft.repoUrl) {
+    const source = `${draft.sourceMode}:${draft.sourceMode === "local" ? draft.localPath : draft.repoUrl}`;
+    if (previousSource.current === source) {
       return;
     }
-    previousRepoUrl.current = draft.repoUrl;
+    previousSource.current = source;
     setBranches([]);
     setBranchMessage("");
     setRepoPath("");
     setWorkflows([]);
+    setPlan(null);
+    setHistory([]);
     setSavedSecretNames([]);
     setDraft((current) => ({ ...current, workflowPath: "", jobId: "" }));
-  }, [appReady, draft.repoUrl]);
+  }, [appReady, draft.localPath, draft.repoUrl, draft.sourceMode]);
+
+  useEffect(() => {
+    setPlan(null);
+  }, [draft.jobId, draft.shellMode, draft.target, draft.workflowPath]);
 
   useEffect(() => {
     const unlisten = listen<LogEvent>("build-log", (event) => {
@@ -187,24 +235,25 @@ export function useBuildLauncher() {
   }, [logs, logLevel, logSearch]);
 
   const latestPath = useMemo(() => {
-    if (!result || !draft.repoUrl.trim() || !draft.outputFolder.trim()) {
+    if (!result || !draft.outputFolder.trim()) {
       return "";
     }
-    const repoName = draft.repoUrl.trim().replace(/\.git$/, "").split(/[/:]/).filter(Boolean).pop() || "repo";
-    return `${draft.outputFolder}\\${repoName}\\latest`;
-  }, [draft.outputFolder, draft.repoUrl, result]);
+    return `${draft.outputFolder}\\${sourceName(draft)}\\latest`;
+  }, [draft, result]);
 
   const readiness = useMemo(() => {
-    const repoReady = Boolean(draft.repoUrl.trim() && draft.refName.trim());
-    const workflowReady = Boolean(draft.workflowPath && hasWorkflow(workflows, draft.workflowPath));
-    const jobReady = Boolean(draft.jobId && hasJob(workflows, draft.workflowPath, draft.jobId));
+    const repoReady = draft.sourceMode === "local"
+      ? Boolean(draft.localPath.trim())
+      : Boolean(draft.repoUrl.trim() && draft.refName.trim());
+    const workflowReady = !draft.workflowPath || hasWorkflow(workflows, draft.workflowPath);
+    const jobReady = !draft.workflowPath || Boolean(draft.jobId && hasJob(workflows, draft.workflowPath, draft.jobId));
     const outputReady = Boolean(draft.outputFolder.trim());
     const gitReady = toolStatus?.git.available ?? false;
     const javaReady = toolStatus?.java.available ?? false;
     const androidReady = toolStatus?.androidSdk.available ?? false;
     const bashReady = draft.shellMode === "native" || (toolStatus?.gitBash.available ?? false);
-    const secretsReady = savedSecretNames.includes("LOCAL_PROPERTIES_BASE64")
-      && savedSecretNames.includes("LOCAL_DEV_PROPERTIES_BASE64");
+    const secretsReady = plan ? plan.requiredSecrets.every((name) => savedSecretNames.includes(name)) : true;
+    const planReady = plan?.supported ?? false;
 
     return {
       repoReady,
@@ -216,10 +265,11 @@ export function useBuildLauncher() {
       androidReady,
       bashReady,
       secretsReady,
-      canDetect: repoReady && !busy && !loadingBranches,
-      canBuild: repoReady && workflowReady && jobReady && outputReady && !busy,
+      planReady,
+      canDetect: repoReady && !busy && !loadingBranches && !analyzing,
+      canBuild: repoReady && outputReady && !busy && !analyzing,
     };
-  }, [busy, draft, loadingBranches, savedSecretNames, toolStatus, workflows]);
+  }, [analyzing, busy, draft, loadingBranches, plan, savedSecretNames, toolStatus, workflows]);
 
   const saveConfig = useCallback(async (next: AppConfig, message = "Settings saved") => {
     const normalized = normalizeConfig(next);
@@ -264,8 +314,12 @@ export function useBuildLauncher() {
     setStatus("Preparing tools and repository...");
     setResult(null);
     try {
-      const path = await api.prepareRepo(draft.repoUrl.trim(), draft.refName.trim());
-      api.getToolStatus().then(setToolStatus).catch(() => undefined);
+      const path = draft.sourceMode === "local"
+        ? draft.localPath.trim()
+        : await api.prepareRepo(draft.repoUrl.trim(), draft.refName.trim());
+      if (draft.sourceMode === "remote") {
+        api.getToolStatus().then(setToolStatus).catch(() => undefined);
+      }
       setRepoPath(path);
       setStatus("Detecting workflow files...");
       const detected = await api.detectWorkflows(path);
@@ -276,27 +330,28 @@ export function useBuildLauncher() {
         workflowPath: preferredWorkflow?.filePath ?? "",
         jobId: preferredJob?.id ?? "",
       });
-      const secrets = await api.getSecrets(draft.repoUrl.trim());
+      const secrets = await api.getSecrets(draft.sourceMode === "local" ? draft.localPath.trim() : draft.repoUrl.trim());
       setSavedSecretNames(secrets.names);
       setActiveView("workflows");
-      setStatus(detected.length ? "Workflows detected" : "No workflow files found");
+      setStatus(detected.length ? "Workflows detected; analyse a job or build directly" : "No workflow files found; native project detection will be used");
     } catch (error) {
       setBuildState("failed");
       setStatus(String(error));
     } finally {
       setBusy(false);
     }
-  }, [draft.jobId, draft.refName, draft.repoUrl, draft.workflowPath, readiness.repoReady, updateDraft]);
+  }, [draft, readiness.repoReady, updateDraft]);
 
   const saveSecrets = useCallback(async () => {
-    if (!draft.repoUrl.trim()) {
-      setStatus("Add a repository URL before saving secrets.");
+    const source = draft.sourceMode === "local" ? draft.localPath.trim() : draft.repoUrl.trim();
+    if (!source) {
+      setStatus("Choose a project source before saving secrets.");
       return;
     }
     setBusy(true);
     try {
-      await api.saveSecrets(draft.repoUrl.trim(), secretDraft);
-      const secrets = await api.getSecrets(draft.repoUrl.trim());
+      await api.saveSecrets(source, secretDraft);
+      const secrets = await api.getSecrets(source);
       setSavedSecretNames(secrets.names);
       setSecretDraft({});
       setStatus("Secrets saved locally");
@@ -305,34 +360,70 @@ export function useBuildLauncher() {
     } finally {
       setBusy(false);
     }
-  }, [draft.repoUrl, secretDraft]);
+  }, [draft.localPath, draft.repoUrl, draft.sourceMode, secretDraft]);
+
+  const analyzeCurrent = useCallback(async () => {
+    if (!readiness.repoReady) {
+      setStatus("Choose a Git repository or local project before analysing.");
+      return null;
+    }
+    setAnalyzing(true);
+    setStatus("Analysing the local build plan...");
+    try {
+      const request = requestFromDraft(draft);
+      const analyzed = await api.analyzeBuild(request);
+      setPlan(analyzed);
+      const source = draft.sourceMode === "local" ? draft.localPath.trim() : draft.repoUrl.trim();
+      const secrets = await api.getSecrets(source);
+      setSavedSecretNames(secrets.names);
+      setStatus(analyzed.supported ? `${analyzed.targetLabel} plan is ready` : analyzed.summary);
+      return analyzed;
+    } catch (error) {
+      setStatus(String(error));
+      setBuildState("failed");
+      return null;
+    } finally {
+      setAnalyzing(false);
+    }
+  }, [draft, readiness.repoReady]);
 
   const startBuild = useCallback(async () => {
     if (!readiness.canBuild) {
-      setStatus("Complete repository, workflow, job, and output folder before building.");
+      setStatus("Choose a project source and output folder before building.");
       return;
     }
-    const request: BuildRequest = {
-      repoUrl: draft.repoUrl.trim(),
-      refName: draft.refName.trim(),
-      outputFolder: draft.outputFolder,
-      workflowPath: draft.workflowPath,
-      jobId: draft.jobId,
-      shellMode: draft.shellMode,
-    };
+    const request = requestFromDraft(draft);
     setBusy(true);
     setLogs([]);
     setResult(null);
     setBuildState("running");
-    setStatus("Build running...");
+    setStatus("Analysing build and preparing non-admin tools...");
     setActiveView("logs");
     try {
+      const analyzed = await api.analyzeBuild(request);
+      setPlan(analyzed);
+      if (!analyzed.supported) {
+        setActiveView("home");
+        throw new Error(`Build plan has blockers: ${analyzed.blockers.join(" ")}`);
+      }
+      const source = draft.sourceMode === "local" ? draft.localPath.trim() : draft.repoUrl.trim();
+      const secrets = await api.getSecrets(source);
+      setSavedSecretNames(secrets.names);
+      const missingSecrets = analyzed.requiredSecrets.filter((name) => !secrets.names.includes(name));
+      if (missingSecrets.length) {
+        setActiveView("home");
+        throw new Error(`Save the required local secrets before building: ${missingSecrets.join(", ")}`);
+      }
+      setStatus("Installing or verifying required per-user tools...");
+      setToolStatus(await api.installPlanTools(request));
+      setStatus("Build running in an isolated workspace...");
       const build = await api.runBuild(request);
       api.getToolStatus().then(setToolStatus).catch(() => undefined);
       setResult(build);
       setBuildState("success");
       setActiveView("artifacts");
-      setStatus(`Build complete: ${build.apkFiles.length} APK file(s) copied`);
+      setStatus(`Build complete: ${build.artifacts.length} artifact(s) published`);
+      setHistory(await api.listBuildHistory(draft.outputFolder, sourceName(draft)));
     } catch (error) {
       const message = String(error);
       setBuildState(message.toLocaleLowerCase().includes("cancel") ? "cancelled" : "failed");
@@ -354,7 +445,9 @@ export function useBuildLauncher() {
     setActiveView("logs");
     setStatus("Installing local build tools...");
     try {
-      const status = await api.installBuildTools();
+      const status = plan
+        ? await api.installPlanTools(requestFromDraft(draft))
+        : await api.installBuildTools();
       setToolStatus(status);
       setStatus("Local build tools are ready");
     } catch (error) {
@@ -362,7 +455,7 @@ export function useBuildLauncher() {
     } finally {
       setInstallingTools(false);
     }
-  }, []);
+  }, [draft, plan]);
 
   const refreshTools = useCallback(async () => {
     try {
@@ -379,6 +472,32 @@ export function useBuildLauncher() {
       updateDraft({ outputFolder: selected });
     }
   }, [updateDraft]);
+
+  const chooseLocalFolder = useCallback(async () => {
+    const selected = await api.chooseFolder();
+    if (selected) {
+      updateDraft({ sourceMode: "local", localPath: selected, refName: "local" });
+    }
+  }, [updateDraft]);
+
+  const openFolder = useCallback(async (path: string) => {
+    try {
+      await api.openPath(path);
+    } catch (error) {
+      setStatus(String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    const hasSource = draft.sourceMode === "local" ? draft.localPath.trim() : draft.repoUrl.trim();
+    if (!appReady || !hasSource || !draft.outputFolder.trim()) {
+      setHistory([]);
+      return;
+    }
+    api.listBuildHistory(draft.outputFolder, sourceName(draft))
+      .then(setHistory)
+      .catch(() => setHistory([]));
+  }, [appReady, draft.localPath, draft.outputFolder, draft.repoUrl, draft.sourceMode]);
 
   const chooseDefaultRepoFolder = useCallback(async () => {
     const selected = await api.chooseFolder();
@@ -398,8 +517,8 @@ export function useBuildLauncher() {
   }, [config, saveConfig]);
 
   const saveCurrentAsPreset = useCallback(async () => {
-    if (!draft.repoUrl.trim()) {
-      setStatus("Add a repository URL before saving a preset.");
+    if (draft.sourceMode === "local" ? !draft.localPath.trim() : !draft.repoUrl.trim()) {
+      setStatus("Choose a project source before saving a preset.");
       return;
     }
     const preset: BuildPreset = {
@@ -412,6 +531,9 @@ export function useBuildLauncher() {
       outputFolder: draft.outputFolder,
       shellMode: draft.shellMode,
       updatedAt: nowStamp(),
+      sourceMode: draft.sourceMode,
+      localPath: draft.localPath.trim(),
+      target: draft.target,
     };
     await saveConfig({
       ...config,
@@ -435,6 +557,9 @@ export function useBuildLauncher() {
         jobId: draft.jobId,
         outputFolder: draft.outputFolder,
         shellMode: draft.shellMode,
+        sourceMode: draft.sourceMode,
+        localPath: draft.localPath.trim(),
+        target: draft.target,
         updatedAt: nowStamp(),
       }
       : preset);
@@ -483,6 +608,8 @@ export function useBuildLauncher() {
     setSelectedPresetId(preset.id);
     setDraft(draftFromPreset(preset));
     setWorkflows([]);
+    setPlan(null);
+    setHistory([]);
     setRepoPath("");
     setBranchMessage("");
     setStatus(`Loaded preset: ${preset.name}`);
@@ -499,6 +626,7 @@ export function useBuildLauncher() {
 
   return {
     activeView,
+    analyzing,
     appReady,
     autoScrollLogs,
     branches,
@@ -509,6 +637,7 @@ export function useBuildLauncher() {
     draft,
     filteredLogs,
     installingTools,
+    history,
     latestPath,
     loadingBranches,
     logLevel,
@@ -517,6 +646,7 @@ export function useBuildLauncher() {
     readiness,
     repoPath,
     result,
+    plan,
     savedSecretNames,
     secretDraft,
     selectedJob,
@@ -526,13 +656,16 @@ export function useBuildLauncher() {
     toolStatus,
     workflows,
     cancelBuild,
+    analyzeCurrent,
     chooseDefaultOutputFolder,
     chooseDefaultRepoFolder,
     chooseOutputFolder,
+    chooseLocalFolder,
     deletePreset,
     duplicatePreset,
     installTools,
     loadBranches,
+    openFolder,
     prepareAndDetect,
     refreshTools,
     renamePreset,

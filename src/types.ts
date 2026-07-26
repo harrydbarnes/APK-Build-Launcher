@@ -1,4 +1,6 @@
 export type ShellMode = "native" | "bash";
+export type SourceMode = "remote" | "local";
+export type BuildTarget = "auto" | "android" | "tauri" | "electron" | "dotnet";
 
 export type AppConfig = {
   defaultRepoFolder: string;
@@ -19,6 +21,9 @@ export type BuildPreset = {
   outputFolder: string;
   shellMode: ShellMode;
   updatedAt: string;
+  sourceMode: SourceMode;
+  localPath: string;
+  target: BuildTarget;
 };
 
 export type WorkflowSummary = {
@@ -55,15 +60,21 @@ export type ToolStatus = {
   java: ToolProbe;
   androidSdk: ToolProbe;
   gitBash: ToolProbe;
+  node: ToolProbe;
+  rust: ToolProbe;
+  dotnet: ToolProbe;
 };
 
 export type BuildRequest = {
+  sourceMode: SourceMode;
   repoUrl: string;
+  localPath: string;
   refName: string;
   outputFolder: string;
   workflowPath: string;
   jobId: string;
   shellMode: ShellMode;
+  target: BuildTarget;
 };
 
 export type LogEvent = {
@@ -75,5 +86,65 @@ export type LogEvent = {
 export type BuildResult = {
   buildId: string;
   outputFolder: string;
-  apkFiles: string[];
+  target: BuildTarget;
+  artifacts: PublishedArtifact[];
+  manifestPath: string;
+};
+
+export type StepDisposition = "run" | "setup" | "collect" | "skip" | "block";
+
+export type PlannedStep = {
+  name: string;
+  disposition: StepDisposition;
+  command?: string | null;
+  shell?: string | null;
+  workingDirectory?: string | null;
+  reason: string;
+  continueOnError: boolean;
+};
+
+export type ToolRequirement = {
+  id: string;
+  label: string;
+  version?: string | null;
+  portable: boolean;
+  reason: string;
+};
+
+export type ArtifactRule = {
+  pattern: string;
+  kind: string;
+  required: boolean;
+};
+
+export type BuildPlan = {
+  target: BuildTarget;
+  targetLabel: string;
+  supported: boolean;
+  summary: string;
+  steps: PlannedStep[];
+  tools: ToolRequirement[];
+  requiredSecrets: string[];
+  artifacts: ArtifactRule[];
+  blockers: string[];
+  warnings: string[];
+};
+
+export type PublishedArtifact = {
+  kind: string;
+  path: string;
+  relativePath: string;
+  sizeBytes: number;
+  sha256: string;
+};
+
+export type BuildManifest = {
+  buildId: string;
+  source: string;
+  revision: string;
+  target: string;
+  createdAt: string;
+  outputFolder: string;
+  logFile?: string | null;
+  artifacts: PublishedArtifact[];
 };

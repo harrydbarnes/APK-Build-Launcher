@@ -41,7 +41,7 @@ export default function App() {
             <img src="/apk-build-launcher-transparent.png" alt="" />
             <div>
               <h1>APK Build Launcher</h1>
-              <p>Local Android workflow runner</p>
+              <p>Local APK and Windows builder</p>
             </div>
           </div>
 
@@ -70,7 +70,7 @@ export default function App() {
         <section className="content-shell">
           <header className="topbar">
             <div>
-              <p>v2 workspace</p>
+              <p>Non-admin workspace</p>
               <h2>{launcher.selectedPresetId ? "Preset build" : "Custom build"}</h2>
             </div>
             <div className="topbar-actions">

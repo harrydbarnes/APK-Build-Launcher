@@ -78,6 +78,9 @@ export function SettingsView({ launcher }: { launcher: Launcher }) {
           <ToolRow label="Java 17" probe={launcher.toolStatus?.java} />
           <ToolRow label="Android SDK" probe={launcher.toolStatus?.androidSdk} />
           <ToolRow label="Git Bash" probe={launcher.toolStatus?.gitBash} />
+          <ToolRow label="Node.js" probe={launcher.toolStatus?.node} />
+          <ToolRow label="Rust + portable linker" probe={launcher.toolStatus?.rust} />
+          <ToolRow label=".NET SDK" probe={launcher.toolStatus?.dotnet} />
         </div>
       </Panel>
     </div>

@@ -5,6 +5,10 @@ description = "APK Build Launcher"
 authors = ["Harry Barnes"]
 edition = "2021"
 
+[workspace]
+members = ["planner-tests"]
+resolver = "2"
+
 [lib]
 name = "apk_build_launcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

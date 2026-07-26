@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -17,8 +17,14 @@ use std::{
     thread,
 };
 use tauri::{AppHandle, Emitter, State};
+use artifacts::{BuildManifest, PublishedArtifact};
+use planning::{BuildPlan, BuildTarget, JobDoc, StepDisposition, StepDoc};
+use workspace::{IsolatedWorkspace, SourceMode};
 
+mod artifacts;
+mod planning;
 mod tools;
+mod workspace;
 
 #[derive(Default)]
 struct BuildState {
@@ -51,6 +57,12 @@ struct BuildPreset {
     output_folder: String,
     shell_mode: ShellMode,
     updated_at: String,
+    #[serde(default)]
+    source_mode: SourceMode,
+    #[serde(default)]
+    local_path: String,
+    #[serde(default)]
+    target: BuildTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,17 +119,26 @@ struct ToolStatusResponse {
     java: tools::ToolProbe,
     android_sdk: tools::ToolProbe,
     git_bash: tools::ToolProbe,
+    node: tools::ToolProbe,
+    rust: tools::ToolProbe,
+    dotnet: tools::ToolProbe,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BuildRequest {
+    #[serde(default)]
+    source_mode: SourceMode,
     repo_url: String,
+    #[serde(default)]
+    local_path: String,
     ref_name: String,
     output_folder: String,
     workflow_path: String,
     job_id: String,
     shell_mode: ShellMode,
+    #[serde(default)]
+    target: BuildTarget,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -125,7 +146,9 @@ struct BuildRequest {
 struct BuildResult {
     build_id: String,
     output_folder: String,
-    apk_files: Vec<String>,
+    target: BuildTarget,
+    artifacts: Vec<PublishedArtifact>,
+    manifest_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,31 +165,16 @@ struct WorkflowDoc {
     on: Value,
     #[serde(default)]
     env: BTreeMap<String, Value>,
-    jobs: BTreeMap<String, JobDoc>,
+    jobs: BTreeMap<String, DetectionJobDoc>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct JobDoc {
+struct DetectionJobDoc {
     name: Option<String>,
     #[serde(rename = "runs-on", default)]
     runs_on: Value,
     #[serde(default)]
-    env: BTreeMap<String, Value>,
-    #[serde(default)]
-    steps: Vec<StepDoc>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct StepDoc {
-    name: Option<String>,
-    uses: Option<String>,
-    run: Option<String>,
-    #[serde(default)]
-    shell: Option<String>,
-    #[serde(default)]
-    env: BTreeMap<String, Value>,
-    #[serde(default)]
-    with: BTreeMap<String, Value>,
+    steps: Vec<Value>,
 }
 
 pub fn run() {
@@ -183,6 +191,10 @@ pub fn run() {
             save_secrets,
             get_tool_status,
             install_build_tools,
+            install_plan_tools,
+            analyze_build,
+            list_build_history,
+            open_path,
             run_build,
             cancel_build
         ])
@@ -240,13 +252,18 @@ fn prepare_repo_inner(repo_url: String, ref_name: String, update_remote: bool) -
     }
 
     checkout_ref(&repo_path, &ref_name)?;
+    // This checkout lives under the launcher's managed repository cache. Keeping it exact
+    // prevents old generated files or previous adapter edits from entering a new snapshot.
+    run_checked(git_spec(["reset", "--hard", "HEAD"]).cwd(&repo_path), None)?;
+    run_checked(git_spec(["clean", "-fdx"]).cwd(&repo_path), None)?;
     protect_local_properties(&repo_path)?;
     Ok(repo_path.display().to_string())
 }
 
 #[tauri::command]
 fn detect_workflows(repo_path: String) -> Result<Vec<WorkflowSummary>, String> {
-    let workflow_dir = PathBuf::from(repo_path).join(".github").join("workflows");
+    let repo_root = PathBuf::from(repo_path);
+    let workflow_dir = repo_root.join(".github").join("workflows");
     if !workflow_dir.exists() {
         return Ok(vec![]);
     }
@@ -264,7 +281,11 @@ fn detect_workflows(repo_path: String) -> Result<Vec<WorkflowSummary>, String> {
         let name = doc.name.clone().unwrap_or_else(|| path.file_stem().unwrap_or_default().to_string_lossy().to_string());
         workflows.push(WorkflowSummary {
             id: stable_id(path.to_string_lossy().as_ref()),
-            file_path: path.display().to_string(),
+            file_path: path
+                .strip_prefix(&repo_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/"),
             name,
             trigger: summarize_trigger(&doc.on),
             jobs: doc.jobs.iter().map(|(id, job)| JobSummary {
@@ -311,6 +332,9 @@ fn get_tool_status() -> Result<ToolStatusResponse, String> {
         java: status.java,
         android_sdk: status.android_sdk,
         git_bash: status.git_bash,
+        node: status.node,
+        rust: status.rust,
+        dotnet: status.dotnet,
     })
 }
 
@@ -322,6 +346,53 @@ fn install_build_tools(app: AppHandle) -> Result<ToolStatusResponse, String> {
     tools::ensure_android_sdk(&[36], &java, |level, message| log(&app, "tools", level, message))?;
     log(&app, "tools", "success", "Local build tools are ready");
     get_tool_status()
+}
+
+#[tauri::command]
+fn analyze_build(app: AppHandle, request: BuildRequest) -> Result<BuildPlan, String> {
+    let source = resolve_source(&app, &request, true)?;
+    analyze_request(&source, &request)
+}
+
+#[tauri::command]
+fn install_plan_tools(app: AppHandle, request: BuildRequest) -> Result<ToolStatusResponse, String> {
+    let source = resolve_source(&app, &request, true)?;
+    let plan = analyze_request(&source, &request)?;
+    if !plan.supported {
+        return Err(format!("Resolve the build-plan blockers before installing tools: {}", plan.blockers.join(" ")));
+    }
+    log(&app, "tools", "group", &format!("Preparing tools for {}", plan.target_label));
+    let compile_sdks = infer_compile_sdks(&source);
+    tools::ensure_plan_tools(&plan.tools, &compile_sdks, |level, message| log(&app, "tools", level, message))?;
+    log(&app, "tools", "success", "Required local build tools are ready");
+    get_tool_status()
+}
+
+#[tauri::command]
+fn list_build_history(output_folder: String, source_name: String) -> Result<Vec<BuildManifest>, String> {
+    let source_root = PathBuf::from(output_folder).join(sanitize(&source_name));
+    artifacts::read_history(&source_root, 25)
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    let target = PathBuf::from(path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+    #[cfg(windows)]
+    {
+        Command::new("explorer.exe")
+            .arg(&target)
+            .spawn()
+            .map_err(display_err)?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        Err("Open folder is currently supported on Windows.".to_string())
+    }
 }
 
 #[tauri::command]
@@ -349,67 +420,394 @@ fn cancel_build(state: State<BuildState>) -> Result<(), String> {
 }
 
 fn run_build_inner(app: AppHandle, cancel: Arc<AtomicBool>, build_id: String, request: BuildRequest) -> Result<BuildResult, String> {
-    log(&app, &build_id, "group", "Preparing repository");
-    tools::ensure_git(|level, message| log(&app, &build_id, level, message))?;
-    let repo_path = PathBuf::from(prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone(), false)?);
-    log(&app, &build_id, "success", &format!("Repository ready at {}", repo_path.display()));
-
-    let doc = load_workflow(&request.workflow_path)?;
-    let job = doc.jobs.get(&request.job_id).ok_or_else(|| format!("Job '{}' was not found", request.job_id))?.clone();
-    let java_version = requested_java_version(&job);
-    let compile_sdks = infer_compile_sdks(&repo_path);
-    log(&app, &build_id, "group", "Preparing local build tools");
-    let installed = tools::ensure_build_tools(
-        &java_version,
+    log(&app, &build_id, "group", "Preparing source and local build plan");
+    let source = resolve_source(&app, &request, true)?;
+    let plan = analyze_request(&source, &request)?;
+    if !plan.supported {
+        return Err(format!("Build plan has blockers: {}", plan.blockers.join(" ")));
+    }
+    let compile_sdks = infer_compile_sdks(&source);
+    let installed = tools::ensure_plan_tools(
+        &plan.tools,
         &compile_sdks,
-        matches!(request.shell_mode, ShellMode::Bash),
         |level, message| log(&app, &build_id, level, message),
     )?;
-    let java = installed.java;
-    let android_sdk = installed.android_sdk;
-    let secrets = unprotect_secret_store(&stable_id(&request.repo_url))?;
-    let mut missing = required_secrets(&doc, &job)
-        .into_iter()
-        .filter(|name| !secrets.contains_key(name))
+    let source_key = source_key(&request);
+    let secrets = unprotect_secret_store(&stable_id(&source_key))?;
+    let mut missing = plan
+        .required_secrets
+        .iter()
+        .filter(|name| !secrets.contains_key(*name))
+        .cloned()
         .collect::<Vec<_>>();
     missing.sort();
     if !missing.is_empty() {
-        return Err(format!("Missing local secrets: {}. Add them on the Secrets screen.", missing.join(", ")));
+        return Err(format!("Missing local secrets: {}. Add them before building.", missing.join(", ")));
     }
 
-    let context = Context {
-        workspace: repo_path.clone(),
-        ref_name: request.ref_name.clone(),
-        android_sdk,
-        java_home: java.home.clone(),
-        java_bin_dir: java.java.parent().filter(|path| !path.as_os_str().is_empty()).map(|path| path.to_path_buf()),
-        workflow_env: value_map_to_strings(&doc.env),
-        job_env: value_map_to_strings(&job.env),
-        secrets,
-    };
+    let workspaces_root = default_app_data().join("ApkBuildLauncher").join("workspaces");
+    let workspace = IsolatedWorkspace::create(&source, &workspaces_root, &build_id)?;
+    log(&app, &build_id, "success", &format!("Isolated workspace ready at {}", workspace.path().display()));
+    let source_name = source_display_name(&request, &source);
+    let final_output = output_folder_for_source(
+        &request.output_folder,
+        &source_name,
+        &request.ref_name,
+    )?;
+    let revision = source_revision(&source).unwrap_or_else(|| "local-uncommitted".to_string());
+    let mut base_env = installed.env;
+    base_env.extend(value_map_to_strings(&plan.env));
+    if matches!(plan.target, BuildTarget::Android) {
+        let gradle_home = default_app_data().join("ApkBuildLauncher").join("gradle");
+        ensure_dir(&gradle_home)?;
+        base_env.insert("GRADLE_USER_HOME".to_string(), gradle_home.display().to_string());
+        base_env.insert(
+            "GRADLE_OPTS".to_string(),
+            "-Dorg.gradle.caching=true -Dorg.gradle.parallel=true -Dorg.gradle.daemon=true".to_string(),
+        );
+    }
+    base_env.insert("GITHUB_WORKSPACE".to_string(), workspace.path().display().to_string());
+    base_env.insert("GITHUB_REF_NAME".to_string(), request.ref_name.clone());
+    let sensitive_values = secrets.values().cloned().collect::<Vec<_>>();
 
-    for (index, step) in job.steps.iter().enumerate() {
+    for (index, step) in plan.steps.iter().enumerate() {
         if cancel.load(Ordering::SeqCst) {
             return Err("Build cancelled".to_string());
         }
-        let step_name = step.name.clone().unwrap_or_else(|| format!("Step {}", index + 1));
-        log(&app, &build_id, "group", &format!("Step {}: {}", index + 1, step_name));
-        run_step(&app, &build_id, &request, &repo_path, &context, step, cancel.clone())?;
-        log(&app, &build_id, "success", &format!("Finished {}", step_name));
+        log(&app, &build_id, "group", &format!("Step {}: {}", index + 1, step.name));
+        match step.disposition {
+            StepDisposition::Skip | StepDisposition::Setup | StepDisposition::Collect => {
+                log(&app, &build_id, "info", &step.reason);
+            }
+            StepDisposition::Block => return Err(format!("{}: {}", step.name, step.reason)),
+            StepDisposition::Run => {
+                let mut env = base_env.clone();
+                for (key, value) in &step.env {
+                    let raw = planning::value_to_string(value).unwrap_or_default();
+                    let rendered = render_plan_text(&raw, workspace.path(), &request.ref_name, &secrets, &env)?;
+                    env.insert(key.clone(), rendered);
+                }
+                let command = render_plan_text(
+                    step.command.as_deref().unwrap_or_default(),
+                    workspace.path(),
+                    &request.ref_name,
+                    &secrets,
+                    &env,
+                )?;
+                let cwd = safe_working_directory(workspace.path(), step.working_directory.as_deref())?;
+                let outcome = run_planned_process(
+                    &app,
+                    &build_id,
+                    &cwd,
+                    &command,
+                    step.shell.as_deref(),
+                    &request.shell_mode,
+                    &env,
+                    &sensitive_values,
+                    cancel.clone(),
+                );
+                if let Err(error) = outcome {
+                    if step.continue_on_error {
+                        log(&app, &build_id, "warn", &format!("{} failed but is allowed to continue: {}", step.name, error));
+                    } else {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        log(&app, &build_id, "success", &format!("Finished {}", step.name));
     }
 
-    let final_output = output_folder(&request.output_folder, &request.repo_url, &request.ref_name)?;
-    let copied = copy_apks(&repo_path, &final_output)?;
-    if copied.is_empty() {
-        return Err("Build finished, but no APK files were found to copy".to_string());
+    let published = artifacts::collect(workspace.path(), &final_output, &plan.artifacts)?;
+    if published.is_empty() {
+        return Err(format!(
+            "Build commands completed, but none of the expected {} artifacts were produced.",
+            plan.target_label
+        ));
     }
-    sync_latest(&final_output, &request.output_folder, &request.repo_url, &copied)?;
-    log(&app, &build_id, "success", &format!("Copied {} APK file(s) to {}", copied.len(), final_output.display()));
+    let manifest = BuildManifest {
+        build_id: build_id.clone(),
+        source: source_name.clone(),
+        revision,
+        target: plan.target_label.clone(),
+        created_at: Local::now().to_rfc3339(),
+        output_folder: final_output.display().to_string(),
+        log_file: Some(log_file_path(&build_id).display().to_string()),
+        artifacts: published.clone(),
+    };
+    let manifest_path = artifacts::write_manifest(&final_output, &manifest)?;
+    let latest = PathBuf::from(&request.output_folder).join(sanitize(&source_name)).join("latest");
+    artifacts::publish_latest(&final_output, &latest)?;
+    workspace.cleanup()?;
+    log(&app, &build_id, "success", &format!("Published {} artifact(s) to {}", published.len(), final_output.display()));
     Ok(BuildResult {
         build_id,
         output_folder: final_output.display().to_string(),
-        apk_files: copied.into_iter().map(|path| path.display().to_string()).collect(),
+        target: plan.target,
+        artifacts: published,
+        manifest_path: manifest_path.display().to_string(),
     })
+}
+
+fn resolve_source(app: &AppHandle, request: &BuildRequest, update_remote: bool) -> Result<PathBuf, String> {
+    match request.source_mode {
+        SourceMode::Local => workspace::validate_local_source(&request.local_path),
+        SourceMode::Remote => {
+            if request.repo_url.trim().is_empty() {
+                return Err("Enter a Git repository URL or choose a local project.".to_string());
+            }
+            tools::ensure_git(|level, message| log(app, "tools", level, message))?;
+            prepare_repo_inner(request.repo_url.clone(), request.ref_name.clone(), update_remote).map(PathBuf::from)
+        }
+    }
+}
+
+fn analyze_request(source: &Path, request: &BuildRequest) -> Result<BuildPlan, String> {
+    let workflow = if request.workflow_path.trim().is_empty() {
+        None
+    } else {
+        let path = PathBuf::from(&request.workflow_path);
+        let resolved = if path.is_absolute() { path } else { source.join(path) };
+        Some(resolved)
+    };
+    planning::analyze(
+        source,
+        workflow.as_deref(),
+        (!request.job_id.trim().is_empty()).then_some(request.job_id.as_str()),
+        request.target,
+    )
+}
+
+fn source_key(request: &BuildRequest) -> String {
+    match request.source_mode {
+        SourceMode::Remote => request.repo_url.trim().to_string(),
+        SourceMode::Local => request.local_path.trim().to_string(),
+    }
+}
+
+fn source_display_name(request: &BuildRequest, source: &Path) -> String {
+    match request.source_mode {
+        SourceMode::Remote => repo_name(&request.repo_url),
+        SourceMode::Local => source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("local-project")
+            .to_string(),
+    }
+}
+
+fn source_revision(source: &Path) -> Option<String> {
+    run_output(git_spec(["rev-parse", "HEAD"]).cwd(source), None)
+        .ok()
+        .map(|revision| revision.trim().to_string())
+        .filter(|revision| !revision.is_empty())
+}
+
+fn output_folder_for_source(root: &str, source_name: &str, ref_name: &str) -> Result<PathBuf, String> {
+    let timestamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let reference = if ref_name.trim().is_empty() { "local" } else { ref_name };
+    let path = PathBuf::from(root)
+        .join(sanitize(source_name))
+        .join(sanitize(reference))
+        .join(timestamp);
+    ensure_dir(&path)?;
+    Ok(path)
+}
+
+fn safe_working_directory(workspace: &Path, relative: Option<&str>) -> Result<PathBuf, String> {
+    let candidate = relative
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| workspace.join(value))
+        .unwrap_or_else(|| workspace.to_path_buf());
+    let canonical_workspace = workspace.canonicalize().map_err(display_err)?;
+    let canonical = candidate
+        .canonicalize()
+        .map_err(|err| format!("Working directory '{}' is unavailable: {}", candidate.display(), err))?;
+    if !canonical.starts_with(&canonical_workspace) {
+        return Err(format!("Working directory escapes the isolated workspace: {}", relative.unwrap_or_default()));
+    }
+    Ok(canonical)
+}
+
+fn render_plan_text(
+    input: &str,
+    workspace: &Path,
+    ref_name: &str,
+    secrets: &HashMap<String, String>,
+    env: &HashMap<String, String>,
+) -> Result<String, String> {
+    let mut output = input.to_string();
+    for name in required_secrets_in_text(input) {
+        let value = secrets.get(&name).ok_or_else(|| format!("Missing secret {}", name))?;
+        for expression in [
+            format!("${{{{ secrets.{} }}}}", name),
+            format!("${{{{secrets.{}}}}}", name),
+        ] {
+            output = output.replace(&expression, value);
+        }
+    }
+    for (key, value) in env {
+        for expression in [
+            format!("${{{{ env.{} }}}}", key),
+            format!("${{{{env.{}}}}}", key),
+        ] {
+            output = output.replace(&expression, value);
+        }
+    }
+    output = output
+        .replace("${{ github.workspace }}", workspace.to_string_lossy().as_ref())
+        .replace("${{github.workspace}}", workspace.to_string_lossy().as_ref())
+        .replace("${{ github.ref_name }}", ref_name)
+        .replace("${{github.ref_name}}", ref_name);
+    if output.contains("${{") {
+        return Err(format!("Unsupported workflow expression remains in command: {}", redact_line(&output)));
+    }
+    Ok(output)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_planned_process(
+    app: &AppHandle,
+    build_id: &str,
+    cwd: &Path,
+    script: &str,
+    step_shell: Option<&str>,
+    selected_shell: &ShellMode,
+    envs: &HashMap<String, String>,
+    sensitive_values: &[String],
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    if matches!(selected_shell, ShellMode::Native) && script.contains("./gradlew") {
+        let translated = script.replace("./gradlew", ".\\gradlew.bat");
+        return spawn_planned_process(
+            app,
+            build_id,
+            cwd,
+            "powershell.exe",
+            &["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &translated],
+            envs,
+            sensitive_values,
+            cancel,
+        );
+    }
+    let requested = step_shell.unwrap_or_default().to_ascii_lowercase();
+    let wants_bash = matches!(selected_shell, ShellMode::Bash)
+        || requested.contains("bash")
+        || requested.contains("sh")
+        || looks_like_bash(script);
+    if wants_bash {
+        let bash = tools::find_git_bash()
+            .ok_or_else(|| "This step needs Git Bash. Use Install / Repair Tools and retry.".to_string())?;
+        spawn_planned_process(
+            app,
+            build_id,
+            cwd,
+            bash.to_string_lossy().as_ref(),
+            &["-lc", script],
+            envs,
+            sensitive_values,
+            cancel,
+        )
+    } else {
+        spawn_planned_process(
+            app,
+            build_id,
+            cwd,
+            "powershell.exe",
+            &["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            envs,
+            sensitive_values,
+            cancel,
+        )
+    }
+}
+
+fn looks_like_bash(script: &str) -> bool {
+    ["sed ", "mkdir -p", "cp ", "mv ", "find ", "base64 --decode", "#!/bin/"]
+        .iter()
+        .any(|marker| script.contains(marker))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_planned_process(
+    app: &AppHandle,
+    build_id: &str,
+    cwd: &Path,
+    program: &str,
+    args: &[&str],
+    envs: &HashMap<String, String>,
+    sensitive_values: &[String],
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .current_dir(cwd)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Failed to start '{}': {}", program, err))?;
+    let process_id = child.id();
+    let stdout = child.stdout.take().ok_or_else(|| "Could not capture stdout".to_string())?;
+    let stderr = child.stderr.take().ok_or_else(|| "Could not capture stderr".to_string())?;
+    let app_out = app.clone();
+    let id_out = build_id.to_string();
+    let out_secrets = sensitive_values.to_vec();
+    let app_err = app.clone();
+    let id_err = build_id.to_string();
+    let err_secrets = sensitive_values.to_vec();
+    let out_thread = thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            log(&app_out, &id_out, "info", &redact_values(&line, &out_secrets));
+        }
+    });
+    let err_thread = thread::spawn(move || {
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            log(&app_err, &id_err, "warn", &redact_values(&line, &err_secrets));
+        }
+    });
+    let status = loop {
+        if cancel.load(Ordering::SeqCst) {
+            terminate_process_tree(process_id);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Build cancelled".to_string());
+        }
+        if let Some(status) = child.try_wait().map_err(display_err)? {
+            break status;
+        }
+        thread::sleep(std::time::Duration::from_millis(200));
+    };
+    let _ = out_thread.join();
+    let _ = err_thread.join();
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{} failed with status {}. See the build log for command output.", program, status))
+    }
+}
+
+fn terminate_process_tree(process_id: u32) {
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill.exe")
+            .args(["/PID", &process_id.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn redact_values(line: &str, sensitive_values: &[String]) -> String {
+    let mut output = redact_line(line);
+    for value in sensitive_values.iter().filter(|value| !value.is_empty()) {
+        output = output.replace(value, "[redacted secret]");
+    }
+    output
 }
 
 fn run_step(app: &AppHandle, build_id: &str, request: &BuildRequest, repo_path: &Path, context: &Context, step: &StepDoc, cancel: Arc<AtomicBool>) -> Result<(), String> {
@@ -890,6 +1288,9 @@ fn copy_apks(repo_path: &Path, output: &Path) -> Result<Vec<PathBuf>, String> {
 fn sync_latest(final_output: &Path, root_output: &str, repo_url: &str, copied: &[PathBuf]) -> Result<(), String> {
     let latest = PathBuf::from(root_output).join(repo_name(repo_url)).join("latest");
     ensure_dir(&latest)?;
+    for apk in find_apks(&latest)? {
+        fs::remove_file(apk).map_err(display_err)?;
+    }
     for apk in copied {
         let destination = latest.join(apk.file_name().unwrap_or_default());
         fs::copy(final_output.join(apk.file_name().unwrap_or_default()), destination).map_err(display_err)?;
@@ -1286,7 +1687,17 @@ fn redact_line(line: &str) -> String {
     }
 }
 
+fn log_file_path(build_id: &str) -> PathBuf {
+    config_root().join("logs").join(format!("{}.log", sanitize(build_id)))
+}
+
 fn log(app: &AppHandle, build_id: &str, level: &str, message: &str) {
+    let path = log_file_path(build_id);
+    if ensure_parent(&path).is_ok() {
+        if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{} [{}] {}", Local::now().to_rfc3339(), level, message);
+        }
+    }
     let _ = app.emit("build-log", LogEvent {
         build_id: build_id.to_string(),
         level: level.to_string(),
